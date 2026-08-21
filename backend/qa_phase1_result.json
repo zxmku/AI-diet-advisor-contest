@@ -1,0 +1,182 @@
+{
+  "passed": 23,
+  "failed": 2,
+  "crashes": 0,
+  "results": [
+    {
+      "id": "P0-①-K8s",
+      "name": "Kubernetes/容器编排不入 A/B 且有边界提示",
+      "passed": true,
+      "evidence": "retrieval.py:102 (C 仅平台意图触发); main.py:306-309 (空检索边界文案)",
+      "detail": "intent=chitchat; has_boundary=True; reply_head='抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。您可以换个说法，或告诉'"
+    },
+    {
+      "id": "P0-①-Croute",
+      "name": "平台价格问题路由到 C 库(intent=platform)",
+      "passed": false,
+      "evidence": "retrieval.py:26-29 (PLATFORM_HINTS); retrieval.py:102; main.py:324",
+      "detail": "intent=nutrition_qa; sources=['A', 'A', 'A', 'B', 'C', 'C', 'C']; reply_head='【第二章秋季膳食搭配原则 · 2.3 三餐热量分配建议】\\n健'"
+    },
+    {
+      "id": "P0-①-NoC",
+      "name": "营养数值问答来源不含 C",
+      "passed": true,
+      "evidence": "retrieval.py:102 (仅 current_query 命中平台词才追加 C)",
+      "detail": "sources=['A']"
+    },
+    {
+      "id": "P0-②-糖尿病",
+      "name": "糖尿病语境注入标准免责声明",
+      "passed": true,
+      "evidence": "compliance.py:20-25 (糖尿病关键词); main.py:302 (disclaimer 注入); compliance.py:15 (DISCLAIMER_STANDARD)",
+      "detail": "disclaimer='本建议仅供参考，不构成医疗建议，请咨询专业医师或注册营养师'; reply_head='【第五章方案使用指南 · 5.3 常见疑问解答】\\nQ：可以按'"
+    },
+    {
+      "id": "P0-②-不编造",
+      "name": "免责同时不给出医疗诊断/药量",
+      "passed": true,
+      "evidence": "main.py:302 (disclaimer 与检索答案分离，无诊断内容)",
+      "detail": "reply_head='【第五章方案使用指南 · 5.3 常见疑问解答】\\nQ：可以按照食谱吃多久？A：7'"
+    },
+    {
+      "id": "P0-③-拒答",
+      "name": "用药剂量明确拒答且不编造剂量",
+      "passed": true,
+      "evidence": "compliance.py:28-33 (二甲双胍等用药词); main.py:316-321 (拒答文案); main.py:302",
+      "detail": "explicit_refuse=True; disclaimer=present; reply_head='本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\\n【第四章特殊人群饮食注意事'"
+    },
+    {
+      "id": "P0-③-无剂量",
+      "name": "回答不含具体片数/剂量编造",
+      "passed": true,
+      "evidence": "main.py:318-321 (仅给膳食参考，不编剂量)",
+      "detail": "reply_head='本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\\n【第四章特殊人群饮食注意事'"
+    },
+    {
+      "id": "BUG-3/4-检索",
+      "name": "非数值知识问答检索正常+来源标注",
+      "passed": true,
+      "evidence": "main.py:272,312-323 (BM25 检索+【chapter·section】标注); retrieval.py:76",
+      "detail": "reply_head='【第五章方案使用指南 · 5.3 常见疑问解答】\\nQ：可以按照食谱吃多久？A：7'; sources_chapter=['第二章秋季膳食搭配原则']"
+    },
+    {
+      "id": "BUG-5-鸡胸肉（",
+      "name": "数值速查「鸡胸肉（去皮）多少千卡」精确返回",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup 命中→format_reply); nutrition_lookup.py:257-268,277-297",
+      "detail": "intent=nutrition_lookup; missing=[]; src_A=True; reply_head='【第三章常见食材营养数据速查表 · 3.1 肉类与海鲜（每100 克可食部）】\\n鸡胸肉（去皮）：每1'"
+    },
+    {
+      "id": "BUG-5-糙米多少",
+      "name": "数值速查「糙米多少千卡」精确返回",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup 命中→format_reply); nutrition_lookup.py:257-268,277-297",
+      "detail": "intent=nutrition_lookup; missing=[]; src_A=True; reply_head='【第三章常见食材营养数据速查表 · 3.3 谷物与薯类（每100 克可食部）】\\n糙米：每100克可食'"
+    },
+    {
+      "id": "BUG-5-鸡蛋蛋白",
+      "name": "数值速查「鸡蛋蛋白质多少」精确返回",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup 命中→format_reply); nutrition_lookup.py:257-268,277-297",
+      "detail": "intent=nutrition_lookup; missing=[]; src_A=True; reply_head='【第三章常见食材营养数据速查表 · 3.1 肉类与海鲜（每100 克可食部）】\\n鸡蛋（全蛋）：每10'"
+    },
+    {
+      "id": "BUG-5-三文鱼多",
+      "name": "数值速查「三文鱼多少千卡」精确返回",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup 命中→format_reply); nutrition_lookup.py:257-268,277-297",
+      "detail": "intent=nutrition_lookup; missing=[]; src_A=True; reply_head='【第三章常见食材营养数据速查表 · 3.1 肉类与海鲜（每100 克可食部）】\\n三文鱼：每100克可'"
+    },
+    {
+      "id": "BUG-5-西兰花多",
+      "name": "数值速查「西兰花多少千卡」精确返回",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup 命中→format_reply); nutrition_lookup.py:257-268,277-297",
+      "detail": "intent=nutrition_lookup; missing=[]; src_A=True; reply_head='【第三章常见食材营养数据速查表 · 3.4 蔬菜与菌菇（每100 克可食部）】\\n西兰花：每100克可'"
+    },
+    {
+      "id": "BUG-5-牛油果",
+      "name": "牛油果(表无)优雅回退/提示无法查表",
+      "passed": false,
+      "evidence": "main.py:281-294 (lookup 返回 None 后未显式给『无法查表』文案，直接落 BM25)",
+      "detail": "intent=nutrition_qa; has_table_hint=False; reply_head='【第二章秋季膳食搭配原则 · 2.3 三餐热量分配建议】\\n健康优选平台推荐的三餐热量配比：\\n• 早餐：30%（约450-'"
+    },
+    {
+      "id": "HEALTH-ready",
+      "name": "/health 含 nutrition_table_ready(bool)",
+      "passed": true,
+      "evidence": "main.py:107 (nutrition_table_ready 字段)",
+      "detail": "ready=True"
+    },
+    {
+      "id": "HEALTH-rows",
+      "name": "/health 含 nutrition_table_rows(int)=31",
+      "passed": true,
+      "evidence": "main.py:108 (nutrition_table_rows); nutrition_lookup 解析 3.1-3.4 共31行",
+      "detail": "rows=31"
+    },
+    {
+      "id": "UX-mt1",
+      "name": "多轮①鸡胸肉→165 且本轮无免责刷屏",
+      "passed": true,
+      "evidence": "main.py:281-294; main.py:302 (仅疾病/用药才免责)",
+      "detail": "reply_head='【第三章常见食材营养数据速查表 · 3.1 肉类与海鲜（每100 克可食部）】\\n'; disclaimer=None"
+    },
+    {
+      "id": "UX-mt2",
+      "name": "多轮②『那糙米呢』连贯指向糙米",
+      "passed": true,
+      "evidence": "main.py:268-272 (ctx 检索增强); main.py:312-323",
+      "detail": "coherent=True; reply_head='【第二章轻盈减脂方案 · 2.4 食材替换指南】\\n当食谱中的食材不可获得时，可按以下原则替换：\\n蛋白'; disclaimer=None"
+    },
+    {
+      "id": "UX-mt3",
+      "name": "多轮③糖尿病→免责出现(且仅此时)",
+      "passed": true,
+      "evidence": "compliance.py:20-25; main.py:302,270 (_session_has_disease 跨轮延续)",
+      "detail": "disclaimer=present; reply_head='【第五章方案使用指南 · 5.3 常见疑问解答】\\nQ：可以按照食谱吃多久？A：7'"
+    },
+    {
+      "id": "DEG-起服",
+      "name": "KB 缺失时服务仍能启动(不阻断)",
+      "passed": true,
+      "evidence": "nutrition_lookup.py:177-219 (_load 捕获异常不抛出); main.py:62-74 (lifespan 不阻断)",
+      "detail": "health={'status': 'ok', 'llm_key_set': False, 'database': 'sqlite', 'nutrition_table_ready': False, 'nutrition_table_rows': 0}"
+    },
+    {
+      "id": "DEG-ready",
+      "name": "/health nutrition_table_ready=false",
+      "passed": true,
+      "evidence": "main.py:107; nutrition_lookup.py:305-311 (is_nutrition_table_ready)",
+      "detail": "ready=False; rows=0"
+    },
+    {
+      "id": "DEG-rows0",
+      "name": "/health nutrition_table_rows=0",
+      "passed": true,
+      "evidence": "nutrition_lookup.py:209 (_NUTRITION_ROWS=0 on empty)",
+      "detail": "rows=0"
+    },
+    {
+      "id": "DEG-warn",
+      "name": "启动时打印 warning 日志",
+      "passed": true,
+      "evidence": "main.py:72-73 (lifespan warning); nutrition_lookup.py:195/213 (_load warning)",
+      "detail": "warning_found=True"
+    },
+    {
+      "id": "DEG-回退",
+      "name": "KB 缺失时数值问答不崩溃(优雅回退)",
+      "passed": true,
+      "evidence": "main.py:281-294 (lookup=None→落 BM25 降级); nutrition_lookup.py:257-268",
+      "detail": "crash=False; reply_head='【第二章轻盈减脂方案 · 2.4 食材替换指南】\\n当食谱中的食材不可获得时，可按以下原则替换：\\n蛋白'"
+    },
+    {
+      "id": "DEG-还原",
+      "name": "KB 已还原（原名存在，.bak 消失）",
+      "passed": true,
+      "evidence": "审计脚本 finally 块 rename 还原",
+      "detail": "KB.exists=True; BAK.exists=False"
+    }
+  ]
+}

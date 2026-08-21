@@ -1,0 +1,29 @@
+# ── Python 缓存 ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── 运行时数据库（启动自动重建，不入库）──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── 虚拟环境 ──
+venv/
+.venv/
+env/
+.venv*/
+
+# ── 前端依赖与构建产物 ──
+node_modules/
+dist/
+build/
+
+# ── 编辑器/IDE ──
+.idea/
+.vscode/
+*.swp
+
+# ── 日志 ──
+*.log

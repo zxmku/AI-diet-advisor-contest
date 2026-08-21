@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>健康优选 · AI 智能膳食顾问</title>
+  <style>
+    :root {
+      --bg: #f5f7f6; --card: #ffffff; --primary: #1f9d6b; --primary-d: #157a52;
+      --text: #1f2a26; --muted: #6b7a73; --line: #e3e9e6; --warn: #c9971b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg); color: var(--text); height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .app { width: 100%; max-width: 760px; height: 100vh; display: flex; flex-direction: column; background: var(--card); box-shadow: 0 0 24px rgba(0,0,0,.06); }
+    header { padding: 14px 18px; background: var(--primary); color: #fff; display: flex; align-items: center; gap: 10px; }
+    header .logo { font-size: 22px; }
+    header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+    header small { margin-left: auto; opacity: .85; font-size: 12px; }
+    .disclaimer { background: #fff7e6; color: #8a6100; font-size: 12px; padding: 7px 18px; border-bottom: 1px solid #f0e2bd; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 18px 4px; }
+    .chip { border: 1px solid var(--line); background: #fff; color: var(--primary-d); border-radius: 18px; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: .15s; }
+    .chip:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .chip.alt { color: var(--muted); }
+    .examples { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 18px 8px; }
+    .ex { font-size: 12px; color: var(--primary-d); background: #eaf4ef; border: 1px solid #cfe7dc; border-radius: 14px; padding: 4px 10px; cursor: pointer; }
+    .ex:hover { background: var(--primary); color: #fff; }
+    .messages { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 14px; }
+    .msg { max-width: 86%; padding: 10px 14px; border-radius: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; font-size: 14.5px; }
+    .msg.user { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+    .msg.bot { align-self: flex-start; background: #eef3f0; border-bottom-left-radius: 4px; }
+    .msg.bot .src { margin-top: 8px; font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 6px; }
+    .msg.bot .src b { color: var(--primary-d); }
+    .msg.bot .disc { margin-top: 8px; font-size: 12px; color: #8a6100; background: #fff7e6; border: 1px solid #f0e2bd; border-radius: 6px; padding: 5px 8px; }
+    .msg.bot .model { display: inline-block; margin-top: 6px; font-size: 11px; color: #fff; border-radius: 4px; padding: 1px 6px; }
+    .model.local { background: var(--muted); }
+    .model.warn { background: var(--warn); }
+    .inputbar { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); background: #fff; }
+    .inputbar input { flex: 1; border: 1px solid var(--line); border-radius: 22px; padding: 10px 16px; font-size: 14px; outline: none; }
+    .inputbar input:focus { border-color: var(--primary); }
+    .inputbar button { border: none; background: var(--primary); color: #fff; border-radius: 22px; padding: 0 20px; font-size: 14px; cursor: pointer; }
+    .inputbar button:hover { background: var(--primary-d); }
+    .inputbar button:disabled { opacity: .5; cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <span class="logo">🥗</span>
+      <h1>健康优选 · AI 智能膳食顾问</h1>
+      <small id="status">连接中…</small>
+    </header>
+    <div class="disclaimer">⚠️ 本工具提供膳食参考，不替代专业医疗诊断。如有疾病或特殊体质，请遵医嘱。</div>
+    <div class="chips">
+      <span class="chip" data-action="lose_fat">🍎 减脂方案</span>
+      <span class="chip" data-action="gain_muscle">💪 增肌方案</span>
+      <span class="chip" data-action="control_sugar">🩸 控糖方案</span>
+      <span class="chip" data-action="today_meal">🍱 今日食谱</span>
+      <span class="chip alt" data-rec="减脂">推荐·减脂</span>
+      <span class="chip alt" data-rec="增肌">推荐·增肌</span>
+      <span class="chip alt" data-rec="调理">推荐·调理</span>
+    </div>
+    <div class="examples">
+      <span class="ex" data-q="鸡胸肉多少千卡？">鸡胸肉多少千卡？</span>
+      <span class="ex" data-q="减脂期能吃糙米吗？">减脂期能吃糙米吗？</span>
+      <span class="ex" data-q="糖尿病患者早餐吃什么？">糖尿病早餐</span>
+      <span class="ex" data-q="我对海鲜过敏，能推荐减脂食谱吗？">海鲜过敏食谱</span>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="inputbar">
+      <input id="msg" type="text" placeholder="问问膳食问题，例如：鸡胸肉多少千卡？减脂期能吃糙米吗？" maxlength="500" />
+      <button id="send">发送</button>
+    </div>
+  </div>
+
+  <script>
+    // 会话持久化：UID/SID 存 localStorage，刷新后保留（支撑多轮记忆与历史）
+    const UID = localStorage.getItem("hp_uid") || ("demo-user-" + Math.random().toString(36).slice(2, 8));
+    const SID = localStorage.getItem("hp_sid") || ("demo-session-" + Math.random().toString(36).slice(2, 8));
+    localStorage.setItem("hp_uid", UID);
+    localStorage.setItem("hp_sid", SID);
+    const messagesEl = document.getElementById("messages");
+    const inputEl = document.getElementById("msg");
+    const sendBtn = document.getElementById("send");
+    const statusEl = document.getElementById("status");
+
+    function appendUser(text) {
+      const d = document.createElement("div");
+      d.className = "msg user";
+      d.textContent = text;
+      messagesEl.appendChild(d);
+      scroll();
+    }
+
+    function appendBot(data, sources, model, degraded, disclaimer) {
+      const d = document.createElement("div");
+      d.className = "msg bot";
+      const reply = document.createElement("div");
+      reply.textContent = data.reply || "（无回答）";
+      d.appendChild(reply);
+      if (disclaimer) {
+        const dc = document.createElement("div");
+        dc.className = "disc";
+        dc.textContent = "⚠️ " + disclaimer;
+        d.appendChild(dc);
+      }
+      if (sources && sources.length) {
+        const s = document.createElement("div");
+        s.className = "src";
+        s.innerHTML = "📚 来源：" + sources.map(x => `<b>${x.source}</b> · ${esc(x.chapter)} · ${esc(x.section)}`).join("　|　");
+        d.appendChild(s);
+      }
+      if (model) {
+        const m = document.createElement("span");
+        m.className = "model " + (degraded ? "warn" : "local");
+        m.textContent = (degraded ? "⚠️ 本地规则模式（无 LLM Key）" : "模型：" + model);
+        d.appendChild(m);
+      }
+      messagesEl.appendChild(d);
+      scroll();
+    }
+
+    function esc(s) { return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+    function scroll() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+    async function post(url, body) {
+      sendBtn.disabled = true;
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Session-Id": SID, "X-User-Id": UID },
+          body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        appendBot(j.data || {}, j.sources || [], j.meta && j.meta.model, j.meta && j.meta.degraded, j.disclaimer);
+      } catch (e) {
+        appendBot({ reply: "⚠️ 连接失败：" + e.message }, [], "error", false, null);
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
+    function sendChat() {
+      const text = inputEl.value.trim();
+      if (!text) return;
+      appendUser(text);
+      inputEl.value = "";
+      post("/api/chat", { user_id: UID, session_id: SID, message: text });
+    }
+
+    sendBtn.addEventListener("click", sendChat);
+    inputEl.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+
+    document.querySelectorAll(".chip[data-action]").forEach(c => {
+      c.addEventListener("click", () => {
+        const action = c.getAttribute("data-action");
+        const label = c.textContent;
+        appendUser(label);
+        post("/api/quick", { user_id: UID, session_id: SID, action });
+      });
+    });
+    document.querySelectorAll(".chip[data-rec]").forEach(c => {
+      c.addEventListener("click", () => {
+        const goal = c.getAttribute("data-rec");
+        appendUser("推荐方案：" + goal);
+        post("/api/recommend", { user_id: UID, session_id: SID, goal_tag: goal });
+      });
+    });
+    document.querySelectorAll(".ex").forEach(c => {
+      c.addEventListener("click", () => {
+        const q = c.getAttribute("data-q");
+        inputEl.value = q;
+        sendChat();
+      });
+    });
+
+    // 启动自检
+    fetch("/health").then(r => r.json()).then(j => {
+      statusEl.textContent = "已连接 · " + (j.llm_key_set ? "DeepSeek 已配置" : "本地规则模式");
+    }).catch(() => { statusEl.textContent = "未连接"; });
+
+    appendBot({ reply: "您好，我是健康优选 AI 膳食顾问。可以问我食材热量、减重/增肌/控糖饮食方案，或点上方按钮/示例快速开始。" }, [], "local-rules", true, null);
+  </script>
+</body>
+</html>

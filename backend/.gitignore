@@ -1,0 +1,11 @@
+# 运行时数据库产物（启动时由 init_db 自动重建，不纳入交付包）
+*.db
+*.db-shm
+*.db-wal
+
+# 密钥与本地配置
+.env
+
+# Python 缓存
+__pycache__/
+*.pyc

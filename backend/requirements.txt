@@ -1,0 +1,12 @@
+# HealthPick AI 智能膳食顾问 · 后端依赖
+# 安装：pip install -r requirements.txt
+
+fastapi>=0.110,<1.0  # Web 框架：API 网关与 6 个 REST 端点（M3）；锁 <1.0 避免 1.0 移除 lifespan 钩子导致启动失败
+uvicorn[standard]  # ASGI 服务器：本地启动与容器运行
+sqlalchemy       # ORM：users/sessions/messages/plans_cache 四表（M14）
+pydantic         # 请求/响应模型：统一响应格式数据契约
+python-dotenv    # .env 加载：配置与密钥环境变量化（M16）
+httpx            # HTTP 客户端：自测脚本与后续 DeepSeek API 调用（M13）
+rank_bm25        # BM25 检索打分（MOD-02 知识检索用）
+jieba            # 中文分词（MOD-02 BM25 前置分词用）
+pytest           # 红线自动化测试（MOD-12 用）

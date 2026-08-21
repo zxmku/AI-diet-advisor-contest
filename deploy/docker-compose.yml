@@ -1,0 +1,21 @@
+# HealthPick 一键部署（默认 SQLite，无需外部数据库）。
+# 用法：docker compose up -d  →  访问 http://localhost:8000
+services:
+  healthpick:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: healthpick
+    ports:
+      - "8000:8000"
+    environment:
+      # 进阶2：填入 DeepSeek Key 即升级为 LLM 动态生成；留空则纯规则降级
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - HEALTHPICK_ENV=prod
+      - HEALTHPICK_RATE_LIMIT_PER_MIN=60
+      # SQLite 数据文件重定向到独立数据卷目录，避免空命名卷覆盖 /app/backend 代码目录
+      - DATABASE_URL=sqlite:////app/data/healthpick.db
+    restart: unless-stopped
+    # 数据卷持久化（SQLite WAL 文件）：仅挂载数据目录，代码来自镜像，两者互不覆盖
+    volumes:
+      - hp_data:/app/data

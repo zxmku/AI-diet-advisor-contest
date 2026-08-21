@@ -1,0 +1,166 @@
+{
+  "version": "1.0.0",
+  "taboos": [
+    {
+      "id": "seafood_allergy",
+      "name": "海鲜过敏",
+      "trigger_keywords": [
+        "海鲜过敏",
+        "虾过敏",
+        "吃虾起疹",
+        "海产品过敏"
+      ],
+      "excluded_foods": [
+        "虾仁",
+        "三文鱼",
+        "鳕鱼",
+        "鲈鱼",
+        "龙利鱼",
+        "蛤蜊",
+        "鱿鱼"
+      ],
+      "limits": null,
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "gout",
+      "name": "痛风/高尿酸",
+      "trigger_keywords": [
+        "痛风",
+        "尿酸高",
+        "高尿酸"
+      ],
+      "excluded_foods": [
+        "动物内脏",
+        "浓肉汤",
+        "沙丁鱼",
+        "啤酒"
+      ],
+      "limits": "严格限制嘌呤",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "kidney_disease",
+      "name": "肾病",
+      "trigger_keywords": [
+        "肾病",
+        "肾功能不全",
+        "慢性肾病"
+      ],
+      "excluded_foods": [
+        "香蕉",
+        "土豆",
+        "菠菜",
+        "牛油果"
+      ],
+      "limits": "蛋白质 0.6-0.8 克/公斤体重，限盐限钾",
+      "disclaimer_type": "disease"
+    },
+    {
+      "id": "gluten_intolerance",
+      "name": "Gluten 不耐受（乳糜泻）",
+      "trigger_keywords": [
+        "乳糜泻",
+        "麸质不耐受",
+        "Gluten",
+        "gluten"
+      ],
+      "excluded_foods": [
+        "全麦面包",
+        "全麦馒头",
+        "小麦制品",
+        "大麦制品",
+        "黑麦制品"
+      ],
+      "limits": "严格避免小麦、大麦、黑麦及其制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "pregnancy",
+      "name": "孕期",
+      "trigger_keywords": [
+        "孕期",
+        "怀孕",
+        "孕妇"
+      ],
+      "excluded_foods": [
+        "生鱼片",
+        "溏心蛋"
+      ],
+      "limits": "避免生食，限制咖啡因<200 毫克/日，禁酒",
+      "disclaimer_type": "disease"
+    },
+    {
+      "id": "lactation",
+      "name": "哺乳期",
+      "trigger_keywords": [
+        "哺乳期",
+        "母乳喂养",
+        "喂奶"
+      ],
+      "excluded_foods": [
+        "鲨鱼",
+        "剑鱼",
+        "方头鱼"
+      ],
+      "limits": "避免高汞鱼类，注意过敏原传递",
+      "disclaimer_type": "disease"
+    },
+    {
+      "id": "hypertension",
+      "name": "控压（高血压）",
+      "trigger_keywords": [
+        "高血压",
+        "血压高",
+        "控压"
+      ],
+      "excluded_foods": [
+        "酱油",
+        "腌制品",
+        "加工肉类",
+        "浓汤宝",
+        "方便面调料包"
+      ],
+      "limits": "每日食盐<5 克，警惕隐形盐",
+      "disclaimer_type": "disease"
+    },
+    {
+      "id": "nut_allergy",
+      "name": "坚果过敏",
+      "trigger_keywords": [
+        "坚果过敏",
+        "坚果",
+        "花生过敏",
+        "腰果过敏"
+      ],
+      "excluded_foods": [
+        "坚果",
+        "花生",
+        "腰果",
+        "杏仁",
+        "牛油果"
+      ],
+      "limits": "避免坚果、花生及其制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "lactose_intolerance",
+      "name": "乳糖不耐受",
+      "trigger_keywords": [
+        "乳糖不耐受",
+        "乳糖",
+        "喝牛奶拉肚子",
+        "喝牛奶腹泻"
+      ],
+      "excluded_foods": [
+        "牛奶",
+        "奶酪",
+        "酸奶",
+        "黄油",
+        "冰淇淋"
+      ],
+      "limits": "避免牛奶及乳制品",
+      "disclaimer_type": "allergy"
+    }
+  ]
+}
