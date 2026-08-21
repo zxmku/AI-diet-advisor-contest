@@ -118,6 +118,28 @@
     background:var(--card);color:var(--brand-deep);cursor:pointer;transition:.2s;min-height:44px}
   .rec .act button:hover{background:var(--brand-soft);border-color:var(--brand)}
 
+  /* 一餐卡（P3/P4：从问题到一餐的可视化营养呈现） */
+  .rec.meal .meal-body{padding:13px 15px}
+  .meal-kcal{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .meal-kcal .kcal-num{font-size:34px;font-weight:800;color:var(--brand-deep);line-height:1.1}
+  .meal-kcal .kcal-unit{font-size:12px;color:var(--ink-3)}
+  .meal-macros{display:flex;gap:8px;margin:8px 0 10px;flex-wrap:wrap}
+  .meal-macros span{font-size:12px;background:var(--brand-soft);color:var(--brand-deep);
+    border-radius:999px;padding:4px 10px;font-weight:600}
+  .meal-items{display:flex;flex-direction:column;gap:7px;margin-bottom:12px}
+  .mi{display:flex;align-items:center;gap:8px;font-size:13px;padding:8px 10px;
+    background:var(--bg);border:1px solid var(--line);border-radius:12px}
+  .mi .mi-cat{flex-shrink:0;font-size:10.5px;color:var(--brand-deep);background:var(--brand-soft);
+    border-radius:999px;padding:2px 8px;font-weight:600}
+  .mi .mi-food{flex:1;color:var(--ink);min-width:0}
+  .mi .mi-kcal{flex-shrink:0;font-size:12px;color:var(--ink-2);font-weight:600}
+  .meal-sec{font-size:12px;font-weight:700;color:var(--ink-2);margin:10px 2px 6px}
+  .meal-method{margin:0 0 2px;padding-left:20px;display:flex;flex-direction:column;gap:5px}
+  .meal-method li{font-size:12.5px;color:var(--ink-2);line-height:1.6}
+  .meal-swaps{display:flex;flex-wrap:wrap;gap:6px}
+  .meal-swaps span{font-size:11.5px;background:var(--accent-soft);color:#A8672A;
+    border:1px solid #F2D9BC;border-radius:999px;padding:4px 10px}
+
   /* 场景入口卡片（首屏，无历史会话时展示） */
   .scene{max-width:88%;align-self:flex-start;width:100%;background:var(--card);border:1px solid var(--line);
     border-radius:20px;box-shadow:var(--shadow);padding:13px 13px 12px;animation:rise .35s ease}
@@ -413,6 +435,9 @@ function renderBot(j){
     d.appendChild(s);
   }
   msgs.appendChild(d);
+  if(j.data.meal){
+    renderMeal(j.data.meal);   // P3/P4：命中一餐意图 → 渲染结构化一餐卡（reply 为引言，细节见卡片）
+  }
   scroll();
 }
 
@@ -475,6 +500,131 @@ function renderRec(plan, sources){
   scroll();
 }
 
+/* ═══ 渲染：一餐卡（P3 结构化 meal → 可视化营养呈现） ═══ */
+function renderMeal(meal){
+  if(!meal) return;
+  const d = document.createElement('div');
+  d.className = 'rec meal';
+  d.id = 'mealCard';
+  const head = document.createElement('div');
+  head.className = 'rc-head';
+  head.id = 'mealTitle';
+  head.textContent = '🍱 ' + (meal.name || '为你搭配的一餐');
+  d.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'meal-body';
+
+  /* 总热量大数字 */
+  const kcal = document.createElement('div');
+  kcal.className = 'meal-kcal';
+  kcal.id = 'mealTotalKcal';
+  const num = document.createElement('span');
+  num.className = 'kcal-num';
+  num.textContent = (meal.total_kcal != null) ? Math.round(meal.total_kcal) : '—';
+  const unit = document.createElement('span');
+  unit.className = 'kcal-unit';
+  unit.textContent = '千卡 / 一餐';
+  kcal.appendChild(num); kcal.appendChild(unit);
+  body.appendChild(kcal);
+
+  /* 营养素三条（蛋白/碳水/脂肪 克数） */
+  const macros = document.createElement('div');
+  macros.className = 'meal-macros';
+  macros.id = 'mealMacros';
+  const mk = (k, label) => {
+    const s = document.createElement('span');
+    s.textContent = label + ' ' + ((meal.macros && meal.macros[k] != null) ? meal.macros[k] + 'g' : '—');
+    return s;
+  };
+  macros.appendChild(mk('protein', '蛋白'));
+  macros.appendChild(mk('carbs', '碳水'));
+  macros.appendChild(mk('fat', '脂肪'));
+  body.appendChild(macros);
+
+  /* 食材清单：分类标签 + 克数 + 热量 */
+  const items = document.createElement('div');
+  items.className = 'meal-items';
+  items.id = 'mealItems';
+  (meal.items || []).forEach(it => {
+    const row = document.createElement('div');
+    row.className = 'mi';
+    const cat = document.createElement('span');
+    cat.className = 'mi-cat';
+    cat.textContent = it.category || '';
+    const food = document.createElement('span');
+    food.className = 'mi-food';
+    food.textContent = it.food + ' ' + it.grams + 'g';
+    const kcalTxt = document.createElement('span');
+    kcalTxt.className = 'mi-kcal';
+    kcalTxt.textContent = it.kcal != null ? Math.round(it.kcal) + ' 千卡' : '热量约计';
+    row.appendChild(cat); row.appendChild(food); row.appendChild(kcalTxt);
+    items.appendChild(row);
+  });
+  body.appendChild(items);
+
+  /* 做法步骤 */
+  if(meal.method && meal.method.length){
+    const sec = document.createElement('div');
+    sec.className = 'meal-sec';
+    sec.textContent = '👩‍🍳 做法';
+    body.appendChild(sec);
+    const ol = document.createElement('ol');
+    ol.className = 'meal-method';
+    ol.id = 'mealMethod';
+    meal.method.forEach(st => {
+      const li = document.createElement('li');
+      li.textContent = st;
+      ol.appendChild(li);
+    });
+    body.appendChild(ol);
+  }
+
+  /* 替换建议（同族替换） */
+  const swaps = meal.swaps || {};
+  const swapParts = [];
+  if(swaps.protein && swaps.protein.length) swapParts.push('蛋白可换：' + swaps.protein.join(' / '));
+  if(swaps.carbs && swaps.carbs.length) swapParts.push('碳水可换：' + swaps.carbs.join(' / '));
+  if(swapParts.length){
+    const sec = document.createElement('div');
+    sec.className = 'meal-sec';
+    sec.textContent = '🔄 替换建议';
+    body.appendChild(sec);
+    const sw = document.createElement('div');
+    sw.className = 'meal-swaps';
+    sw.id = 'mealSwaps';
+    swapParts.forEach(t => {
+      const s = document.createElement('span');
+      s.textContent = t;
+      sw.appendChild(s);
+    });
+    body.appendChild(sw);
+  }
+
+  /* 表外热量说明（如橄榄油按约计） */
+  if(meal.note){
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:10.5px;color:var(--ink-3);margin-top:8px;line-height:1.5';
+    note.textContent = 'ℹ️ ' + meal.note;
+    body.appendChild(note);
+  }
+
+  d.appendChild(body);
+
+  /* 来源标注（小字） */
+  const foot = document.createElement('div');
+  foot.className = 'rc-foot';
+  foot.id = 'mealSources';
+  const srcs = meal.sources || [];
+  foot.textContent = '📚 来源：' + (srcs.length ? srcs.map(x =>
+    (x.source || '') + ' · ' + (x.chapter || '') + ' · ' + (x.section || '')
+  ).join('　|　') : '健康膳食知识库');
+  d.appendChild(foot);
+
+  msgs.appendChild(d);
+  scroll();
+}
+
 /* ═══ fetch 封装：POST + headers + 契约解析；失败 toast + 错误气泡 ═══ */
 async function post(url, body){
   try{
@@ -500,7 +650,7 @@ async function loadRecommend(goalTag){
   }
 }
 
-/* ═══ 场景入口：调 /api/quick 快捷方案（复用 renderRec 渲染） ═══ */
+/* ═══ 场景入口：调 /api/quick 快捷方案（兼容 meal/plan，复用 renderMeal/renderRec） ═══ */
 async function runQuick(action, btn){
   const scene = document.getElementById('sceneCards');
   if(!scene || scene.dataset.busy === '1') return;                 // 防连点
@@ -512,11 +662,14 @@ async function runQuick(action, btn){
   btn.disabled = false;
   btn.innerHTML = oldHtml;
   delete scene.dataset.busy;
-  if(j && j.data && j.data.plans && j.data.plans.length){
-    collapseScene(scene);                                          // 成功后收起卡片区
-    renderRec(j.data.plans[0], j.sources);                         // 复用推荐渲染
+  if(j && j.data && j.data.meal){
+    collapseScene(scene);
+    renderMeal(j.data.meal);                             // 兼容：quick 若返回结构化一餐
+  } else if(j && j.data && j.data.plans && j.data.plans.length){
+    collapseScene(scene);                                // 成功后收起卡片区
+    renderRec(j.data.plans[0], j.sources);               // 复用推荐渲染（现状）
   } else {
-    toast('没拿到方案，换个入口再试');                              // 失败保留卡片可重试
+    toast('没拿到方案，换个入口再试');                    // 失败保留卡片可重试
   }
 }
 /* 收起首屏场景卡片（淡出后移除，避免残留） */

@@ -5,6 +5,8 @@
 - 合规层（compliance.py）硬注入医疗免责 + 拒答用药 + 禁忌排除；
 - 多轮对话落库（MOD-04），history 真实可读；
 - 推荐/快捷基于素材 B 真实方案生成理由（无「接口联调中」占位）；
+- P3 一餐生成：命中一餐意图（晚餐/今晚/给我做…）时由 _build_meal 确定性出餐——
+  数值（热量/蛋白/碳水/克数）仅来自营养速查表真实值 × 份量，绝不编造，天然剔除禁忌；
 - 未配置 DeepSeek Key 时以上述规则兜底，配置后可由 app/llm.py 升级为 LLM 合成（M13）。
 """
 from __future__ import annotations
@@ -184,6 +186,272 @@ def _detect_goal(message: str) -> str | None:
         if any(kw in text for kw in keywords):
             return goal
     return None
+
+
+# ── P3 一餐意图：触发词 / 目标追问话术 / 餐次识别 ──
+_MEAL_INTENT_TRIGGERS: tuple[str, ...] = (
+    "早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "今晚", "夜宵",
+    "今天吃什么", "一餐", "一顿", "搭一餐", "做一餐", "做一顿", "来一餐",
+    "给我做", "帮我做", "想吃点啥", "吃啥", "吃点啥", "吃什么好",
+)
+
+_MEAL_GOAL_ASK = "想减脂、增肌还是控糖？告诉我你的目标，我先帮你搭一餐。"
+
+_MEAL_TIME_WORDS: dict[str, tuple[str, ...]] = {
+    "早餐": ("早餐", "早饭"),
+    "午餐": ("午餐", "午饭"),
+    "晚餐": ("晚餐", "晚饭", "今晚"),
+}
+
+# ── P3 一餐生成器：各人群槽位食材（均来自素材 B 方案/食谱/速查表，绝不混 C）──
+# 主蛋白/碳水/蔬菜候选：优先取自 _GOAL_PLAN_MAP[goal] 方案食材，其余以素材 B 的
+# 7 日循环食谱 / 控糖餐盘法则 / 食材替换指南为据（如减脂「虾仁/北豆腐」见 B 2.3）。
+_MEAL_PROTEIN_FOODS: dict[str, list[str]] = {
+    "减脂": ["鸡胸肉（去皮）", "鳕鱼", "虾仁"],
+    "增肌": ["鸡胸肉（去皮）", "牛里脊", "鸡蛋（全蛋）"],
+    "调理": ["鸡胸肉（去皮）", "鳕鱼", "北豆腐"],
+}
+_MEAL_CARB_FOODS: dict[str, list[str]] = {
+    "减脂": ["糙米", "燕麦", "红薯"],
+    "增肌": ["白米饭", "糙米", "燕麦"],
+    "调理": ["糙米", "藜麦", "红薯"],
+}
+_MEAL_VEGGIE_FOODS: dict[str, list[str]] = {
+    "减脂": ["西兰花", "菠菜", "番茄"],
+    "增肌": ["西兰花", "菠菜", "番茄"],
+    "调理": ["菠菜", "西兰花", "黄瓜"],
+}
+# 同族替换项（素材 B 2.4 食材替换指南 / 3.3 / 4.2 为据；全部在速查表有真实值）
+_MEAL_PROTEIN_SWAPS: dict[str, list[str]] = {
+    "减脂": ["鳕鱼", "虾仁", "北豆腐"],
+    "增肌": ["牛里脊", "鸡蛋（全蛋）", "希腊酸奶（无糖）"],
+    "调理": ["北豆腐", "鳕鱼", "鸡蛋（全蛋）"],
+}
+_MEAL_CARB_SWAPS: dict[str, list[str]] = {
+    "减脂": ["燕麦", "红薯", "藜麦"],
+    "增肌": ["糙米", "燕麦", "藜麦"],
+    "调理": ["藜麦", "红薯", "燕麦"],
+}
+# 做法步骤模板：仅烹饪指导（无营养素数值），措辞源自素材 B 方案原文（香煎/清蒸/
+# 焯水/控糖 321 餐盘等），来源标注指向检索到的 B 章节；蔬菜做法优先用速查表「推荐做法」。
+_MEAL_METHOD_TEMPLATES: dict[str, list[str]] = {
+    "减脂": [
+        "{protein}切块腌制，平底锅加少量橄榄油，中小火煎至两面金黄（参考素材 B 香煎做法）。",
+        "{carb}淘洗后加水蒸煮成杂粮饭（生重约 100 克），替代精白米面。",
+        "{veggie}焯水后蒜蓉快炒或凉拌（参考速查表推荐做法）。",
+    ],
+    "增肌": [
+        "{protein}切块腌制，平底锅加少量橄榄油煎熟，作为优质蛋白来源。",
+        "{carb}加水蒸煮至熟，训练日可作为主力碳水补充能量。",
+        "{veggie}焯水后快炒，搭配高蛋白餐补足膳食纤维。",
+    ],
+    "调理": [
+        "{protein}清蒸或水煮，避免红烧、油炸等重油做法。",
+        "{carb}选低 GI 主食，按「先吃蔬菜→再吃蛋白→最后吃碳水」的顺序进食。",
+        "{veggie}凉拌或清炒，少盐烹调（每日食盐建议低于 5 克）。",
+    ],
+}
+
+
+def _is_meal_intent(message: str) -> bool:
+    """是否命中「一餐」意图（晚餐/午餐/早餐/今晚/给我做/想吃点啥 等）。"""
+    text = message or ""
+    return any(t in text for t in _MEAL_INTENT_TRIGGERS)
+
+
+def _meal_goal(message: str, session_goal: str | None) -> str | None:
+    """一餐目标解析：消息内目标词（纯子串，放宽到请求语义）优先，其次会话 goal。
+
+    注意：这里不走 _detect_goal 的「个人声明」过滤——「给我做减脂晚餐」是请求语义，
+    不应覆盖 session.goal_tag（DEFECT-B 逻辑照旧），但本餐仍按消息里的「减脂」来搭。
+    """
+    text = message or ""
+    for goal, keywords in _GOAL_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return goal
+    return session_goal
+
+
+def _meal_time_from_message(message: str) -> str:
+    """从消息识别餐次（早餐/午餐/晚餐）；未命中返回「正餐」。"""
+    text = message or ""
+    for meal_time, words in _MEAL_TIME_WORDS.items():
+        if any(w in text for w in words):
+            return meal_time
+    return "正餐"
+
+
+def _is_food_excluded(food: str, excluded_set: set[str]) -> bool:
+    """食材是否命中禁忌清单（双向包含匹配，如「希腊酸奶（无糖）」命中「酸奶」）。"""
+    norm = nutrition_lookup._normalize_food(food)
+    for ex in excluded_set:
+        ex_norm = nutrition_lookup._normalize_food(ex)
+        if ex_norm and (ex_norm in norm or norm in ex_norm):
+            return True
+    return False
+
+
+def _meal_method(
+    goal: str,
+    protein_food: str | None,
+    carb_food: str | None,
+    veggie_food: str | None,
+) -> tuple[list[str], SourceChunk | None]:
+    """做法步骤：取自素材 B 检索块（方案章节/食谱/餐盘）+ 速查表「推荐做法」。
+
+    返回 (steps, chunk)。chunk 为方法来源的 B 检索块（用于来源标注）；未命中时
+    chunk=None（步骤仍以方案模板给出，但不在 sources 里挂假章节）。
+    """
+    chunks = get_retriever().retrieve(f"{goal} 食谱 做法 烹饪", top_k=6)
+    kw = _GOAL_CHAPTER_KW.get(goal, goal)
+    best: SourceChunk | None = None
+    # 优先含「食谱/餐盘/做法」的方案章节（如减脂 2.3 7 日循环食谱、调理 4.3 控糖餐盘）
+    for c in chunks:
+        if c.source == "B" and kw in (c.chapter or ""):
+            if any(sec in (c.section or "") for sec in ("食谱", "餐盘", "做法")):
+                best = c
+                break
+    if best is None:
+        for c in chunks:
+            if c.source == "B" and kw in (c.chapter or ""):
+                best = c
+                break
+
+    template = _MEAL_METHOD_TEMPLATES.get(goal, _MEAL_METHOD_TEMPLATES["减脂"])
+    steps = [
+        t.format(
+            protein=protein_food or "优质蛋白",
+            carb=carb_food or "低 GI 主食",
+            veggie=veggie_food or "时令蔬菜",
+        )
+        for t in template
+    ]
+    # 蔬菜做法优先采用速查表「推荐做法」列（素材 A 权威值，零编造）
+    if veggie_food:
+        row = nutrition_lookup.lookup(veggie_food)
+        if row and row.get("method"):
+            steps[-1] = f"{veggie_food}：{row['method']}（速查表推荐做法）。"
+    return steps, best
+
+
+def _build_meal(goal: str, excluded: list[str], meal_time: str = "正餐") -> dict:
+    """确定性一餐生成器（P3）：主蛋白 + 主食碳水 + 蔬菜 + 好脂肪 + 总热量 + 做法 + 同族替换。
+
+    红线「数值只来自素材」：
+    - 每个食材的热量/蛋白/碳水/脂肪一律经 nutrition_lookup.lookup 取速查表真实值
+      × 份量（克/100）计算，绝不由模型/模板推算；
+    - 表外食材（如橄榄油）热量标注 None（按约计、不编造精确数值，不计入总热量）；
+    - 禁忌排除：主蛋白/碳水/蔬菜/替换项全部剔除 excluded 中的食材；
+    - 做法步骤与来源均来自知识库（B 方案章节 + A 速查表），绝不混 C 库。
+
+    返回结构化 dict（响应契约 data.meal）：
+    {name, items:[{category, food, grams, kcal}], total_kcal,
+     macros:{protein,carbs,fat}, method:[...], swaps:{protein,carbs}, sources:[...]}
+    """
+    base = _GOAL_PLAN_MAP.get(goal) or _GOAL_PLAN_MAP["减脂"]
+    excluded_set = set(excluded)
+
+    def pick(candidates: Sequence[str]) -> str | None:
+        for f in candidates:
+            if not _is_food_excluded(f, excluded_set):
+                return f
+        return None
+
+    def clean_swaps(candidates: Sequence[str]) -> list[str]:
+        return [f for f in candidates if not _is_food_excluded(f, excluded_set)]
+
+    protein = pick(_MEAL_PROTEIN_FOODS[goal])
+    carb = pick(_MEAL_CARB_FOODS[goal])
+    veggie = pick(_MEAL_VEGGIE_FOODS[goal])
+
+    items: list[dict] = []
+    total_kcal = 0.0
+    macros: dict[str, float] = {"protein": 0.0, "carbs": 0.0, "fat": 0.0}
+    meal_sources: list[dict] = []
+    seen_sources: set[tuple[str, str]] = set()
+
+    def add_item(category: str, food: str, grams: int) -> None:
+        """取速查表真实值 × 份量计算；表外食材 kcal=None（按约计，不编造）。"""
+        nonlocal total_kcal
+        row = nutrition_lookup.lookup(food)
+        kcal: float | None = None
+        if row is not None:
+            if row.get("kcal") is not None:
+                kcal = round(float(row["kcal"]) * grams / 100, 1)
+                total_kcal += kcal
+            if row.get("protein") is not None:
+                macros["protein"] += float(row["protein"]) * grams / 100
+            if row.get("carb") is not None:
+                macros["carbs"] += float(row["carb"]) * grams / 100
+            if row.get("fat") is not None:
+                macros["fat"] += float(row["fat"]) * grams / 100
+            src_key = (row["source_chapter"], row["source_section"])
+            if src_key not in seen_sources:
+                seen_sources.add(src_key)
+                meal_sources.append(
+                    {"source": "A", "chapter": row["source_chapter"], "section": row["source_section"]}
+                )
+        items.append({"category": category, "food": food, "grams": grams, "kcal": kcal})
+
+    # 结构：主蛋白（150g 级）+ 主食碳水（100g 级）+ 蔬菜（200g 级）+ 好脂肪（10g 级）
+    if protein is not None:
+        add_item("主蛋白", protein, 150)
+    if carb is not None:
+        add_item("主食碳水", carb, 100)
+    if veggie is not None:
+        add_item("蔬菜", veggie, 200)
+    # 好脂肪：橄榄油不在速查表 → 热量按约计（kcal=None），绝不编造精确值
+    add_item("好脂肪", "橄榄油", 10)
+
+    method, method_chunk = _meal_method(goal, protein, carb, veggie)
+    if method_chunk is not None:
+        src_key = (method_chunk.chapter, method_chunk.section)
+        if src_key not in seen_sources:
+            meal_sources.append(
+                {"source": method_chunk.source, "chapter": method_chunk.chapter, "section": method_chunk.section}
+            )
+
+    meal: dict = {
+        "name": f"{base['name']}·{meal_time}",
+        "goal": goal,
+        "meal_time": meal_time,
+        "items": items,
+        "total_kcal": round(total_kcal, 1),
+        "macros": {k: round(v, 1) for k, v in macros.items()},
+        "method": method,
+        "swaps": {
+            "protein": clean_swaps(_MEAL_PROTEIN_SWAPS[goal]),
+            "carbs": clean_swaps(_MEAL_CARB_SWAPS[goal]),
+        },
+        "sources": meal_sources,
+        "note": "好脂肪（橄榄油）热量按约计：营养速查表未收录其精确数值，未计入总热量。",
+    }
+    if excluded_set:
+        meal["excluded_for_allergy"] = sorted(excluded_set)
+    return meal
+
+
+def _meal_response_sources(meal: dict) -> list[dict]:
+    """把 meal.sources（source/chapter/section）补全为响应级 sources（含原文 content）。"""
+    out: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for s in meal["sources"]:
+        key = (s["source"], s["chapter"], s["section"])
+        if key in seen:
+            continue
+        seen.add(key)
+        content = ""
+        if s["source"] == "A":
+            content = nutrition_lookup.get_table_markdown(s["section"]) or ""
+        else:
+            for c in get_retriever().retrieve(f"{meal.get('goal', '')} 饮食计划 食谱", top_k=8):
+                if c.source == "B" and c.section == s["section"]:
+                    content = c.content
+                    break
+        out.append(
+            {"source": s["source"], "chapter": s["chapter"], "section": s["section"], "content": content, "score": None}
+        )
+    return out
 
 
 def _token_overlap(content: str, query_tokens: set[str]) -> int:
@@ -393,43 +661,10 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     intent = "nutrition_qa"
     model_tag = "local-rules"
     degraded = True
-
-    # ── BUG-5 数值问答确定性工具命中（红线要求：数值必须工具计算，禁止模型推理）──
-    # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
-    numeric_hit = False
-    numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
     sources: list = list(chunks)
-    is_num, food = nutrition_lookup.is_numeric_lookup_query(message)
-    if is_num and food:
-        row = nutrition_lookup.lookup(food)
-        if row:
-            reply = nutrition_lookup.format_reply(row)
-            intent = "nutrition_lookup"
-            sources = [{
-                "source": "A",
-                "chapter": row["source_chapter"],
-                "section": row["source_section"],
-                "content": nutrition_lookup.get_table_markdown(row["source_section"]) or "",
-                "score": None,
-            }]
-            numeric_hit = True
-        else:
-            # 仅当候选名「像食材」（≥2 字且含中文）时才走诚实告知分支。
-            # is_numeric_lookup_query 把裸「g」「卡」也当指标词，会从
-            # 「低GI食物有哪些」「yogurt 推荐吗」误提取出 food='低' / 'yo'；
-            # 这类碎片保持原 BM25 回退，避免误报「表中暂未收录」造成回归。
-            numeric_miss = len(food) >= 2 and any("\u4e00" <= ch <= "\u9fff" for ch in food)
-
-    if numeric_miss:
-        reply = (
-            f"【营养速查表】表中暂未收录「{food}」的精确营养数据，无法给出确定数值，恕不臆测。\n"
-            "您可以换问表中已有食材（如鸡胸肉、糙米、西兰花、三文鱼、鸡蛋等），"
-            "或告诉我您想了解的营养维度（热量 / 蛋白质 / 脂肪 / 碳水）。"
-        )
-        intent = "nutrition_lookup_miss"
-        sources = []
 
     # 禁忌识别：请求声明 + 对话触发 + 会话已声明，三路合并
+    # （提前到回复逻辑之前，供 P3 一餐生成器做禁忌排除）
     session_allergy_ids = set(_session_allergies(req.user_id, req.session_id))
     detected_allergies = set(detect_allergies(message))
     # P2：本轮「新检测到」的过敏（尚未写回会话）——只在首次声明时非空 → 只追问一次
@@ -439,69 +674,124 @@ def chat(req: ChatRequest) -> UnifiedResponse:
 
     disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
 
-    if not numeric_hit and not numeric_miss:
-        if not chunks:
-            # 无检索命中：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应（打招呼/闲聊），
-            # 失败再降级原话术——保证「你好」这类友好交互像真 AI，而非甩规则话术。
-            if is_medication_query(message):
-                reply = (
-                    "本工具不提供用药建议，请遵医嘱。如有膳食搭配、营养方面的疑问，"
-                    "我很乐意为您解答。"
-                )
-                intent = "medication_refuse"
+    # ── P3 一餐意图：确定性一餐生成（红线：热量/蛋白/碳水只来自速查表 × 份量，
+    # 绝不编造；生成时已排除禁忌，天然合规）。未命中保持原有数值/检索行为。 ──
+    meal: dict | None = None
+    if _is_meal_intent(message):
+        goal = _meal_goal(message, _session_goal_tag(req.session_id))
+        if goal is None:
+            # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
+            reply = _MEAL_GOAL_ASK
+            intent = "meal_goal_ask"
+            sources = []
+        else:
+            meal = _build_meal(goal, excluded, _meal_time_from_message(message))
+            reply = (
+                f"为你搭配的{meal['name']}👇\n"
+                f"一餐约 {int(round(meal['total_kcal']))} 千卡"
+                "（热量与营养素均按营养速查表数值计算）。"
+            )
+            intent = "meal"
+            model_tag = "local-rules"
+            sources = _meal_response_sources(meal)
+    else:
+        # ── BUG-5 数值问答确定性工具命中（红线要求：数值必须工具计算，禁止模型推理）──
+        # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
+        numeric_hit = False
+        numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
+        is_num, food = nutrition_lookup.is_numeric_lookup_query(message)
+        if is_num and food:
+            row = nutrition_lookup.lookup(food)
+            if row:
+                reply = nutrition_lookup.format_reply(row)
+                intent = "nutrition_lookup"
+                sources = [{
+                    "source": "A",
+                    "chapter": row["source_chapter"],
+                    "section": row["source_section"],
+                    "content": nutrition_lookup.get_table_markdown(row["source_section"]) or "",
+                    "score": None,
+                }]
+                numeric_hit = True
             else:
-                llm_reply = None
-                if llm.is_enabled():
+                # 仅当候选名「像食材」（≥2 字且含中文）时才走诚实告知分支。
+                # is_numeric_lookup_query 把裸「g」「卡」也当指标词，会从
+                # 「低GI食物有哪些」「yogurt 推荐吗」误提取出 food='低' / 'yo'；
+                # 这类碎片保持原 BM25 回退，避免误报「表中暂未收录」造成回归。
+                numeric_miss = len(food) >= 2 and any("\u4e00" <= ch <= "\u9fff" for ch in food)
+
+        if numeric_miss:
+            reply = (
+                f"【营养速查表】表中暂未收录「{food}」的精确营养数据，无法给出确定数值，恕不臆测。\n"
+                "您可以换问表中已有食材（如鸡胸肉、糙米、西兰花、三文鱼、鸡蛋等），"
+                "或告诉我您想了解的营养维度（热量 / 蛋白质 / 脂肪 / 碳水）。"
+            )
+            intent = "nutrition_lookup_miss"
+            sources = []
+
+        if not numeric_hit and not numeric_miss:
+            if not chunks:
+                # 无检索命中：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应（打招呼/闲聊），
+                # 失败再降级原话术——保证「你好」这类友好交互像真 AI，而非甩规则话术。
+                if is_medication_query(message):
+                    reply = (
+                        "本工具不提供用药建议，请遵医嘱。如有膳食搭配、营养方面的疑问，"
+                        "我很乐意为您解答。"
+                    )
+                    intent = "medication_refuse"
+                else:
+                    llm_reply = None
+                    if llm.is_enabled():
+                        llm_reply = llm.synthesize(
+                            message,
+                            [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
+                            history=_recent_user_messages(req.session_id, 3),
+                            session_id=req.session_id,
+                            excluded_foods=excluded or None,
+                        )
+                    if llm_reply:
+                        reply = llm_reply
+                        model_tag = config.DEEPSEEK_MODEL
+                        degraded = False
+                        intent = "chitchat"
+                    else:
+                        reply = (
+                            "抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。"
+                            "您可以换个说法，或告诉我您更关注减脂 / 增肌 / 慢病调理中的哪一类？"
+                        )
+                        intent = "chitchat"
+            else:
+                top = _pick_reply_chunk(chunks, message)
+                intent = "platform" if top.source == "C" else "nutrition_qa"
+                # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
+                # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
+                used_llm = False
+                if llm.is_enabled() and not is_medication_query(message):
                     llm_reply = llm.synthesize(
                         message,
-                        [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
+                        chunks,
                         history=_recent_user_messages(req.session_id, 3),
                         session_id=req.session_id,
                         excluded_foods=excluded or None,
                     )
-                if llm_reply:
-                    reply = llm_reply
-                    model_tag = config.DEEPSEEK_MODEL
-                    degraded = False
-                    intent = "chitchat"
-                else:
-                    reply = (
-                        "抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。"
-                        "您可以换个说法，或告诉我您更关注减脂 / 增肌 / 慢病调理中的哪一类？"
-                    )
-                    intent = "chitchat"
-        else:
-            top = _pick_reply_chunk(chunks, message)
-            intent = "platform" if top.source == "C" else "nutrition_qa"
-            # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
-            # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
-            used_llm = False
-            if llm.is_enabled() and not is_medication_query(message):
-                llm_reply = llm.synthesize(
-                    message,
-                    chunks,
-                    history=_recent_user_messages(req.session_id, 3),
-                    session_id=req.session_id,
-                    excluded_foods=excluded or None,
-                )
-                if llm_reply:
-                    reply = llm_reply
-                    model_tag = config.DEEPSEEK_MODEL
-                    degraded = False
-                    used_llm = True
-            # 未启用 LLM 或合成失败 -> 本地规则兜底（绝不裸奔）
-            if not used_llm:
-                snippet = top.content.strip()
-                if len(snippet) > 600:
-                    snippet = snippet[:600] + "…（更多见下方来源）"
-                if is_medication_query(message):
-                    # 拒答用药，仅给膳食参考
-                    reply = (
-                        "本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\n"
-                        f"【{top.chapter} · {top.section}】\n{snippet}"
-                    )
-                else:
-                    reply = f"【{top.chapter} · {top.section}】\n{snippet}"
+                    if llm_reply:
+                        reply = llm_reply
+                        model_tag = config.DEEPSEEK_MODEL
+                        degraded = False
+                        used_llm = True
+                # 未启用 LLM 或合成失败 -> 本地规则兜底（绝不裸奔）
+                if not used_llm:
+                    snippet = top.content.strip()
+                    if len(snippet) > 600:
+                        snippet = snippet[:600] + "…（更多见下方来源）"
+                    if is_medication_query(message):
+                        # 拒答用药，仅给膳食参考
+                        reply = (
+                            "本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\n"
+                            f"【{top.chapter} · {top.section}】\n{snippet}"
+                        )
+                    else:
+                        reply = f"【{top.chapter} · {top.section}】\n{snippet}"
 
     # P2 画像持久化：过敏全集写回 session + 隐含人群目标动态更新
     # （写库放在 _persist_turn 之前；异常不影响主流程）
@@ -536,8 +826,13 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
 
     _persist_turn(req.user_id, req.session_id, message, reply, [c.model_dump() for c in chunks])
+    data: dict = {"reply": reply, "intent": intent, "goal_tag": None}
+    if meal is not None:
+        # P3 响应契约：命中一餐意图时附加结构化 meal（可选字段）；未命中保持原契约，
+        # 前端检测到 meal 才渲染一餐卡，不破坏现有渲染逻辑。
+        data["meal"] = meal
     return make_response(
-        {"reply": reply, "intent": intent, "goal_tag": None},
+        data,
         sources=sources,
         model=model_tag,
         degraded=degraded,

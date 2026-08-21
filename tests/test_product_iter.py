@@ -1,15 +1,22 @@
-"""P2 产品化迭代测试：个性化记忆贯穿（过敏持久化 + 目标动态更新）+ 过敏反问追问。
+"""P2/P3 产品化迭代测试：个性化记忆贯穿（过敏持久化 + 目标动态更新）+ 过敏反问追问
++ 确定性一餐生成（meal 结构化 + 热量可核对 + 禁忌排除 + 无目标追问）。
 
 覆盖团长核心需求「聊起来 + 记得我」：
 - 首次声明过敏 → 回复以追问开头（含「具体」/「哪一类」）+ 末尾确认排除提示；
 - 同一会话再问（不再声明）→ 不再追问（只问一次）+ 记忆已持久化仍排除；
 - 消息隐含人群目标（血糖偏高）→ session.goal_tag 动态更新为调理类。
 
+P3「从问题到一餐」：
+- 「今晚减脂餐」→ data.meal 结构化存在；total_kcal 与速查表值×克数一致（工具计算）；
+- 海鲜过敏会话要晚餐 → 一餐 items/swaps 均无海鲜 + 排除提示仍在；
+- 无目标会话问「吃什么好」→ 先追问目标（不直接出餐）。
+
 复用 conftest 的 temp DB 隔离；红线 R3 正文剔除不回退一并校验。
 """
 from __future__ import annotations
 
 from app import models
+from app import nutrition_lookup
 from app.database import SessionLocal
 
 # 海鲜过敏（seafood_allergy）在 knowledge/taboo_map.json 中声明的排除食材。
@@ -153,3 +160,93 @@ def test_p2_geiwo_bangwo_request_does_not_overwrite_goal(client):
         sess = _session_row("p2e")
         assert sess is not None
         assert sess.goal_tag == "调理", f"{msg} 不应覆盖 goal_tag: {sess.goal_tag}"
+
+
+# ═══ P3 确定性一餐生成 ═══
+
+
+def _nutrition_kcal(food: str, grams: int) -> float:
+    """按速查表核对热量：表值 × 份量/100（与后端 _build_meal 同一算法，工具计算）。"""
+    row = nutrition_lookup.lookup(food)
+    assert row is not None, f"速查表未收录 {food}"
+    assert row.get("kcal") is not None, f"{food} 速查表无 kcal 值"
+    return round(float(row["kcal"]) * grams / 100, 1)
+
+
+def test_p3_meal_structured_and_kcal_traceable(client):
+    """「今晚减脂餐」→ data.meal 结构化存在；total_kcal 与速查表值×克数一致；
+    items 含主蛋白/主食碳水/蔬菜/好脂肪；sources 无 C 库；回复为自然引言。"""
+    r = _chat(client, "今晚减脂餐", session_id="p3a", user_id="u_p3")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] == "meal"
+    meal = body["data"]["meal"]
+    assert meal is not None
+    # 结构契约：name/items/total_kcal/macros/method/swaps/sources 齐全
+    assert "name" in meal and "items" in meal and "total_kcal" in meal
+    assert "macros" in meal and "method" in meal and "swaps" in meal and "sources" in meal
+    cats = {it["category"] for it in meal["items"]}
+    assert {"主蛋白", "主食碳水", "蔬菜", "好脂肪"} <= cats, f"缺槽位: {cats}"
+    # 热量可核对：抽查鸡胸肉（150g）/糙米（100g）/西兰花（200g）
+    by_food = {it["food"]: it for it in meal["items"]}
+    for food, grams in (("鸡胸肉（去皮）", 150), ("糙米", 100), ("西兰花", 200)):
+        item = by_food.get(food)
+        assert item is not None, f"一餐缺 {food}"
+        assert item["kcal"] == _nutrition_kcal(food, grams), (
+            f"{food} 热量与速查表不一致: {item['kcal']} != {_nutrition_kcal(food, grams)}"
+        )
+    # total_kcal = 全部可算 item kcal 之和（橄榄油表外不计入）
+    computed = sum(it["kcal"] for it in meal["items"] if it["kcal"] is not None)
+    assert abs(meal["total_kcal"] - computed) < 0.01, (
+        f"total_kcal 不可核对: {meal['total_kcal']} != {computed}"
+    )
+    # 红线：sources 绝不混 C 库
+    assert meal["sources"], "一餐缺少来源标注"
+    assert all(s["source"] != "C" for s in meal["sources"])
+    # 回复为自然引言（如「为你搭配的…」）
+    assert "为你搭配的" in body["data"]["reply"]
+    assert "千卡" in body["data"]["reply"]
+
+
+def test_p3_meal_allergy_exclusion_and_followup(client):
+    """海鲜过敏声明 + 晚餐 → 首轮追问；次轮出餐 items/swaps 均无海鲜 + 排除提示仍在。"""
+    # 会话先定目标（无目标时一餐会先追问目标，无法直接出餐）
+    r_sess = client.post(
+        "/api/session",
+        json={
+            "user_id": "u_p3",
+            "session_id": "p3b",
+            "action": "new",
+            "goal_tag": "减脂",
+            "allergies": [],
+        },
+    )
+    assert r_sess.status_code == 200
+    # 首轮声明过敏 → 追问（复用 P2 追问风格）
+    r1 = _chat(client, "我对海鲜过敏", session_id="p3b", user_id="u_p3")
+    assert r1.status_code == 200
+    assert r1.json()["data"]["reply"].startswith("收到，已为您记录海鲜过敏")
+    # 次轮要晚餐 → 出餐且餐内无海鲜（items 与同族替换全部剔除）
+    r2 = _chat(client, "给我晚餐", session_id="p3b", user_id="u_p3")
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["data"]["intent"] == "meal"
+    meal = body2["data"]["meal"]
+    assert meal is not None
+    item_foods = {it["food"] for it in meal["items"]}
+    assert not (SEAFOOD_EXCLUDED & item_foods), f"餐内仍含海鲜: {item_foods & SEAFOOD_EXCLUDED}"
+    swap_foods = set(meal["swaps"]["protein"]) | set(meal["swaps"]["carbs"])
+    assert not (SEAFOOD_EXCLUDED & swap_foods), f"替换项仍含海鲜: {swap_foods & SEAFOOD_EXCLUDED}"
+    # 排除提示保留在回复尾部（追问/引言之后）
+    assert "已按您的禁忌排除以下食材" in body2["data"]["reply"]
+
+
+def test_p3_meal_goal_ask_when_no_goal(client):
+    """无目标会话问「吃什么好」→ 先追问目标（不直接出餐，data 无 meal）。"""
+    r = _chat(client, "吃什么好", session_id="p3c", user_id="u_p3")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] == "meal_goal_ask"
+    reply = body["data"]["reply"]
+    assert "减脂" in reply and "增肌" in reply and "控糖" in reply
+    assert "meal" not in body["data"]
