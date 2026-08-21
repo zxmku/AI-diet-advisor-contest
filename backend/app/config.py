@@ -81,6 +81,11 @@ DEEPSEEK_API_KEY: str = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL: str = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL: str = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
+# ── LLM 成本闸门（M17：预算/缓存/限速，防止接真模型后无上限烧 token）──
+LLM_DAILY_BUDGET_TOKENS: int = _as_int("LLM_DAILY_BUDGET_TOKENS", "1000000")
+LLM_CACHE_TTL_SECONDS: int = _as_int("LLM_CACHE_TTL_SECONDS", "86400")
+LLM_RATE_LIMIT_PER_MIN: int = _as_int("LLM_RATE_LIMIT_PER_MIN", "10")
+
 # ── 审计账本 HMAC（缺省时禁用签名仅保留哈希链，记 warning）──
 AUDIT_HMAC_KEY: str = os.environ.get("AUDIT_HMAC_KEY", "")
 if not AUDIT_HMAC_KEY:

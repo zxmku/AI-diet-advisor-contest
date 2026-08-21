@@ -13,3 +13,7 @@ local.key
 # Python 缓存
 __pycache__/
 *.pyc
+
+# M17 成本闸门运行时数据（账本/回复缓存，不入库）
+# 注意：本文件位于 backend/ 下，/data/ 锚定 backend/data/ 目录。
+/data/

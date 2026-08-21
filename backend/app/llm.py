@@ -14,6 +14,7 @@ import logging
 from collections.abc import Sequence
 
 from app import config
+from app.cost_gate import cost_gate
 from app.retrieval import SourceChunk
 
 logger = logging.getLogger("healthpick.llm")
@@ -90,16 +91,39 @@ def synthesize(
     *,
     max_tokens: int = 400,
     temperature: float = 0.3,
+    session_id: str | None = None,
 ) -> str | None:
     """基于检索块合成自然语言答复。
 
     返回模型文本；任何失败返回 None（上层降级 local-rules）。
     history 为最近用户消息（旧→新），用于轻量多轮上下文。
+    session_id 用于 M17 成本闸门：会话级限速 + 记账归属（可为 None）。
+
+    M17 成本闸门（在发起真实 API 调用之前）：
+    - 当日预算超限（LLM_DAILY_BUDGET_TOKENS）→ 直接返回 None 自动降级；
+    - 同消息 TTL 内命中回复缓存（LLM_CACHE_TTL_SECONDS）→ 直接返回缓存，零花费；
+    - 调用成功后记账（usage 缺失则按消息体/回复长度估算）并写入缓存。
 
     允许传入空 chunks：用于打招呼 / 闲聊 / 身份问询等场景，靠系统提示第 5 条
     约束模型行为——仍以「资料未提及则不臆测」为铁律，绝不裸奔。
     """
     if not is_enabled():
+        return None
+
+    # M17 预算闸门：当日已用 token 达到预算即降级，不再发起任何调用。
+    if not cost_gate.check_budget():
+        logger.info("LLM 当日预算已用尽（tokens >= %s），降级 local-rules", cost_gate.budget_tokens)
+        return None
+
+    # M17 回复缓存：同消息 TTL 内命中直接返回，零 API 花费。
+    cache_key = user_message.strip()
+    cached = cost_gate.cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # M17 会话限速：单会话 60 秒窗口内调用次数达到限额即降级（缓存命中不占额度）。
+    if not cost_gate.check_rate(session_id):
+        logger.info("LLM 会话限速触发（session=%s），降级 local-rules", session_id)
         return None
 
     grounding = _grounding_text(chunks)
@@ -133,4 +157,16 @@ def synthesize(
     except (KeyError, IndexError, TypeError) as exc:
         logger.warning("LLM 响应解析失败（降级 local-rules）：%s", exc)
         return None
+    # M17 记账 + 缓存：仅当拿到有效回复才记录（失败/空回复不计费、不缓存）。
+    if content:
+        usage = data.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        if prompt_tokens <= 0 and completion_tokens <= 0:
+            # 响应无 usage 字段：按消息体长度*1.3 / 回复字符数粗略估算。
+            messages_json = json.dumps(messages, ensure_ascii=False)
+            prompt_tokens = int(len(messages_json) * 1.3)
+            completion_tokens = len(content)
+        cost_gate.record(session_id, prompt_tokens, completion_tokens)
+        cost_gate.cache_set(cache_key, content)
     return content or None

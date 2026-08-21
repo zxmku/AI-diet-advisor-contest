@@ -38,6 +38,7 @@ from app.compliance import (
     is_disease_query,
     is_medication_query,
 )
+from app.cost_gate import cost_gate
 from app.database import SessionLocal, init_db
 from app import models
 from app.retrieval import SourceChunk, get_retriever
@@ -108,6 +109,8 @@ def health() -> dict:
         # BUG-5 加固：暴露营养速查表就绪状态，使静默降级可被一眼观测。
         "nutrition_table_ready": nutrition_lookup.is_nutrition_table_ready(),
         "nutrition_table_rows": nutrition_lookup.nutrition_table_status()["rows"],
+        # M17 成本闸门：仅当 LLM 启用时暴露成本状态，未启用为 None。
+        "llm_cost": cost_gate.status() if llm.is_enabled() else None,
     }
 
 
@@ -355,6 +358,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         message,
                         [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
                         history=_recent_user_messages(req.session_id, 3),
+                        session_id=req.session_id,
                     )
                 if llm_reply:
                     reply = llm_reply
@@ -378,6 +382,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     message,
                     chunks,
                     history=_recent_user_messages(req.session_id, 3),
+                    session_id=req.session_id,
                 )
                 if llm_reply:
                     reply = llm_reply
