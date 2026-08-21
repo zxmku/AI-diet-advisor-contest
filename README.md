@@ -1,14 +1,29 @@
-# 10_项目源码_healthpick · 代码唯一根目录
+# 10_项目源码_healthpick · AI 智能膳食顾问源码
 
-> 所有代码只能出现在本目录内。开工前先读根目录《00_目录总图.md》。
-> 施工图纸：`架构蓝图/系统架构蓝图.md`（v2 已冻结）。资产弹药：`05_项目管理/遗产复用清单.md`。
+> 本文档为项目源码目录说明。对外使用请见 `20_交付文档/使用说明.md`（启动方式、真 AI 配置、功能清单与合规红线）。
 
-| 分区 | 职责 | 归属 | 对应蓝图模块 |
-|---|---|---|---|
-| `frontend/` | 原生 HTML/JS 单页聊天界面（零构建、零依赖、更稳定） | 寇豆码 | M1/M2 |
-| `backend/` | FastAPI 对话编排+推荐+问答+合规层 | 寇豆码 | M3-M13、M17 |
-| `knowledge/` | 素材 A/B/C → 结构化 JSON（人工核对后入库） | 寇豆码+严过关核对 | M6/M7、蓝图 5.6 |
-| `tests/` | pytest 全量测试 + 红线专项（混淆/禁忌/免责/边界） | 严过关 | 交付物·测试记录 |
-| `deploy/` | Dockerfile、docker-compose.yml、.env.example | 寇豆码 | M15/M16 |
+## 目录分区
 
-铁律：① 素材原件只读，JSON 一律从 `04_mdagent_markdown` 复制加工；② 真实 API Key 永不入库，只进环境变量；③ 每个分区完工后在 `05_项目管理/运行日志/` 留日志。
+| 分区 | 职责 | 说明 |
+|---|---|---|
+| `frontend/` | 原生 HTML/JS 单页聊天界面（零构建、零依赖） | 含聊天输入、快捷按钮、示例气泡、来源标注、模型徽章、历史会话面板 |
+| `backend/` | FastAPI 对话编排 + 推荐 + 问答 + 合规层 | 6 个 REST 端点、统一响应契约、检索/合成/成本闸门/合规层 |
+| `knowledge/` | 素材 A/B/C → 结构化 JSON（人工核对后入库） | A 营养基础 16 块 / B 三套方案 14 块 / C 平台服务 15 块 + 禁忌映射 + 同义词 |
+| `tests/` | pytest 全量测试 + 红线回归（R1-R8） | 环境隔离，不污染线上数据；当前 14 用例全绿 |
+| `deploy/` | Dockerfile、docker-compose.yml、.env.example | 容器部署 `cd deploy && docker compose up -d` → http://localhost:8137 |
+
+## 铁律
+
+1. 素材原件只读：知识库 JSON 由素材加工而来，原件永远不动。
+2. 真实 API Key 永不入库：只经环境变量 / `deploy/.env`（已 gitignore）注入，仓库仅保留 `.env.example` 模板。
+3. 数值必须工具计算：营养数值一律来自权威速查表，禁止模型推理编造。
+
+## 快速验证
+
+```bash
+pip install -r backend/requirements.txt
+cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8137
+# 浏览器打开 http://127.0.0.1:8137/
+```
+
+自动化红线回归：`python -m pytest tests -q`（14 passed）。

@@ -1,11 +1,12 @@
 ﻿# 评委口 8137 启动器（双击即用；密钥经 run_hp.py 注入进程内存，明文不常驻）
 $ErrorActionPreference = 'Stop'
-$VaultDir = "C:\Users\24771\Desktop\第二届月度实战能力大赛·8月专场\10_项目源码_healthpick\backend\scripts\vault"
-$backendDir = "C:\Users\24771\Desktop\第二届月度实战能力大赛·8月专场\10_项目源码_healthpick\backend"
-$py = "C:\Users\24771\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+$VaultDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$backendDir = Join-Path $VaultDir "..\.."
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py) { $py = "python" }
 $runner = Join-Path $VaultDir "run_hp.py"
 $keyfile = Join-Path $env:TEMP "hp_key.tmp"
-$LOG = "C:\temp\launch8137.log"
+$LOG = Join-Path $env:TEMP "launch8137.log"
 function Log($m) { $m | Out-File -Append $LOG }
 
 "" | Set-Content $LOG

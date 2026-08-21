@@ -298,7 +298,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     model_tag = "local-rules"
     degraded = True
 
-    # ── BUG-5 数值问答确定性工具命中（团长指令：数值必须工具计算，禁止模型推理）──
+    # ── BUG-5 数值问答确定性工具命中（红线要求：数值必须工具计算，禁止模型推理）──
     # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
     numeric_hit = False
     numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
