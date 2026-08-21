@@ -114,3 +114,37 @@ def test_llm_state_context_injected():
     assert "【用户近期状态】" in captured["sys"]
     assert "连续坚持" in captured["sys"]
     config.DEEPSEEK_API_KEY = ""
+
+
+def test_week_trend():
+    """M17 历史趋势：近 7 天逐日餐数，日期升序，总数正确。"""
+    uid = "hs_week"
+    today = date.today()
+    _seed(uid, today, 1)
+    _seed(uid, today - timedelta(days=1), 2)
+    _seed(uid, today - timedelta(days=3), 1)
+    trend = health_state.get_week_trend(uid)
+    assert len(trend) == 7, "应返回 7 天"
+    assert trend[0]["date"] == (today - timedelta(days=6)).isoformat(), "首条应为 6 天前（升序）"
+    assert trend[-1]["date"] == today.isoformat(), "末条应为今天"
+    assert sum(t["meal_count"] for t in trend) == 4
+    assert trend[-1]["meal_count"] == 1 and trend[-2]["meal_count"] == 2
+    # state_context 应含近 7 天总览
+    ctx = health_state.build_state_context(uid)
+    assert "近 7 天共记录 4 餐" in ctx
+
+
+def test_plan_why_explain():
+    """M5 Explain My Plan：/api/recommend 返回结构化 why（基于素材字段，不引素材外数值）。"""
+    from app.main import app
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/recommend",
+            json={"user_id": "u", "session_id": "s", "goal_tag": "减脂"},
+        )
+    assert r.status_code == 200
+    plan = r.json()["data"]["plans"][0]
+    assert "why" in plan and "为什么适合你" in plan["why"]
+    assert "减脂" in plan["why"] and plan["kcal_range"] in plan["why"]
+

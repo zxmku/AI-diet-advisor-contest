@@ -63,6 +63,35 @@ def get_yesterday_summary(user_id: str, today: date | None = None) -> dict:
     return _day_summary(user_id, today - timedelta(days=1))
 
 
+def get_week_trend(user_id: str, today: date | None = None) -> list[dict]:
+    """近 7 天历史趋势（M17）：逐日 餐数 + 餐次标签，按日期升序（旧→新）。
+
+    供 /api/state 与前端「近 7 天」展示，强化成长记忆感。
+    """
+    today = today or date.today()
+    by_day: dict[date, list[str]] = {}
+    for r in _fetch_logs(user_id):
+        d = _local_date(r.created_at)
+        if (today - d).days < 7:
+            by_day.setdefault(d, []).append(r.meal_tag)
+    trend = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        tags = by_day.get(d, [])
+        trend.append(
+            {
+                "date": d.isoformat(),
+                "meal_count": len(tags),
+                "meal_tags": tags,
+            }
+        )
+    return trend
+
+
+def _week_total(user_id: str, today: date | None = None) -> int:
+    return sum(t["meal_count"] for t in get_week_trend(user_id, today))
+
+
 def build_state_context(user_id: str, today: date | None = None) -> str:
     """组装可注入 LLM 的近期状态文本（成长记忆：昨天 + 今天 + 坚持情况）。"""
     today = today or date.today()
@@ -82,6 +111,9 @@ def build_state_context(user_id: str, today: date | None = None) -> str:
     y = get_yesterday_summary(user_id, today)
     if y["meal_count"]:
         parts.append(f"昨日记录 {y['meal_count']} 餐")
+    _wk = _week_total(user_id, today)
+    if _wk:
+        parts.append(f"近 7 天共记录 {_wk} 餐")
     return "；".join(parts) if parts else "暂无近期饮食记录"
 
 

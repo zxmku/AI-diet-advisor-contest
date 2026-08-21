@@ -102,6 +102,7 @@
   .msg.ai .spk:hover{opacity:1}
   .msg.ai .spk:disabled{opacity:.4;cursor:default}
   .msg.ai .state-chip{margin-top:8px;display:inline-block;background:linear-gradient(135deg,#e8590c,#f08c00);color:#fff;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600}
+  .msg.ai .state-week{margin-top:6px;font-size:12px;color:#888}
   .msg.me{background:var(--brand);color:#fff;border-bottom-right-radius:6px;align-self:flex-end}
   .msg .src{display:block;font-size:10.5px;color:var(--ink-3);margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
   .msg .warn{color:var(--danger);font-weight:600}
@@ -112,6 +113,7 @@
   /* 方案富卡片（聊天流内） */
   .rec{max-width:88%;align-self:flex-start;background:var(--card);border:1px solid var(--line);
     border-radius:20px;box-shadow:var(--shadow);overflow:hidden;animation:rise .35s ease;width:100%}
+  .rec .rc-why{margin-top:8px;background:#f0f7ff;border:1px solid #cfe3f7;border-radius:8px;padding:7px 10px;font-size:12.5px;color:#24537e;line-height:1.6}
   .rec .rc-head{background:linear-gradient(135deg,var(--brand-soft),#F4FBF7);padding:12px 15px;display:flex;
     align-items:center;gap:7px;font-weight:700;font-size:14px}
   .rec .rc-body{padding:13px 15px;font-size:13px;color:var(--ink-2)}
@@ -487,6 +489,13 @@ function renderRec(plan, sources){
   const reason = document.createElement('div');
   reason.textContent = plan.reason || '';
   body.appendChild(reason);
+  if(plan.why){  // M5 Explain My Plan：结构化"为什么推荐"
+    const why = document.createElement('div');
+    why.className = 'rc-why';
+    why.id = 'planWhy';
+    why.textContent = '💡 ' + plan.why;
+    body.appendChild(why);
+  }
   if(plan.kcal_range){
     const kcal = document.createElement('div');
     kcal.style.marginTop = '8px';
@@ -890,6 +899,15 @@ fetch('/health').then(r=>r.json()).then(j=>{
           else if(st.today_summary && st.today_summary.meal_count > 0) chip.textContent = '📒 今天已记 ' + st.today_summary.meal_count + ' 餐';
           else chip.textContent = '🌱 从记录今天这一餐开始';
           if(chip.textContent) w.appendChild(chip);
+          if(st.week_trend){  // M17 历史趋势：近 7 天记录总览
+            const wk = st.week_trend.reduce((s,x)=>s+(x.meal_count||0),0);
+            if(wk > 0){
+              const wl = document.createElement('div');
+              wl.className = 'state-week';
+              wl.textContent = '📅 近 7 天共记录 ' + wk + ' 餐';
+              w.appendChild(wl);
+            }
+          }
         }
       }
     }catch(e){}

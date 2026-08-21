@@ -1196,6 +1196,13 @@ def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
         "reason": reason or f"{base['name']}：基于《中国居民膳食指南》与素材 B 方案生成。",
         "source_chapter": chunks[0].chapter if chunks else None,
     }
+    # M5 Explain My Plan：结构化"为什么推荐"——基于方案字段（素材 B 数据）给目标对应解释，
+    # 不引入素材外数值；frontend renderRec 在 reason 后展示。
+    plan["why"] = (
+        f"为什么适合你：{goal}阶段的热量与蛋白质目标落在 {base['kcal_range']}，"
+        f"{base['name']}的食材组合（{'、'.join(foods[:3])}{'…' if len(foods) > 3 else ''}）"
+        f"匹配{goal}阶段的蛋白/控卡/稳糖需求。"
+    )
     if excl:
         plan["excluded_for_allergy"] = excl
     return plan
@@ -1407,6 +1414,7 @@ def health_state_endpoint(user_id: str = Query(min_length=1, max_length=64)) -> 
         {
             "streak": health_state.get_streak(user_id),
             "today_summary": health_state.get_today_summary(user_id),
+            "week_trend": health_state.get_week_trend(user_id),
             "greeting": health_state.build_greeting(user_id),
         },
         sources=[],
