@@ -1,4 +1,4 @@
-# 启动脚本（双击即用）
+﻿# 启动脚本（双击即用）
 # 密钥解析顺序：环境变量 -> 密钥箱解密 -> local.key 文件 -> 现场粘贴
 # 密钥只在本次进程内存中，不落盘。
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Definition
