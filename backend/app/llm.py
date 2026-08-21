@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from app import config
 from app.cost_gate import cost_gate
 from app.retrieval import SourceChunk
+from app.time_context import get_meal_time_context
 
 logger = logging.getLogger("healthpick.llm")
 
@@ -29,7 +30,11 @@ _SYSTEM_PROMPT = (
     "4. 可就膳食搭配、分量、烹饪方式给出实用建议。\n"
     "5. 若用户只是打招呼、闲聊或询问你的身份，自然友好回应即可，无需引用资料；"
     "遇到明显超出膳食/营养/健康范畴的请求，礼貌说明你的服务范围并引导回减脂/增肌/调理。\n"
-    "6. 用户表达孤独、疲惫、没胃口或情绪低落时，先共情再给轻饮食建议，语气温暖不敷衍。"
+    "6. 用户表达孤独、疲惫、没胃口或情绪低落时，先共情再给轻饮食建议，语气温暖不敷衍。\n"
+    "7. 先共情，后建议：当用户表达加班累、嘴馋、想吃炸鸡奶茶、减脂平台期焦虑、控糖焦虑时，"
+    "严禁生硬说教或机械拒绝；先给予情绪理解（身体疲倦与多巴胺渴求是正常反应，不必苛责自己），"
+    "再给出无痛可落地的替代方案（如想吃炸鸡→非油炸烤鸡胸/无糖饮品，便利店/外卖场景直接给点单建议），"
+    "而不是简单否定。"
 )
 
 
@@ -145,6 +150,9 @@ def synthesize(
             "\n用户已声明以下食物禁忌，回答中严禁出现或推荐这些食材"
             "（也不要用别名变体暗示）：" + "、".join(excluded_foods)
         )
+    # 时间感知注入：当前时段问候与建议焦点（管道适配器，热插拔）
+    _tctx = get_meal_time_context()
+    system_prompt += f"\n当前时段：{_tctx['period']}（{_tctx['focus']}）"
     messages = [
         {
             "role": "system",

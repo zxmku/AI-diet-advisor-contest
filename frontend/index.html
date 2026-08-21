@@ -98,6 +98,9 @@
   .msg{max-width:85%;padding:11px 15px;border-radius:18px;font-size:14.5px;line-height:1.6;animation:rise .3s ease;word-break:break-word}
   @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   .msg.ai{background:var(--bg);border:1px solid var(--line);border-bottom-left-radius:6px;align-self:flex-start}
+  .msg.ai .spk{margin-top:6px;background:#e8590c;color:#fff;border:none;border-radius:999px;padding:3px 11px;font-size:12px;cursor:pointer;align-self:flex-start;opacity:.88}
+  .msg.ai .spk:hover{opacity:1}
+  .msg.ai .spk:disabled{opacity:.4;cursor:default}
   .msg.me{background:var(--brand);color:#fff;border-bottom-right-radius:6px;align-self:flex-end}
   .msg .src{display:block;font-size:10.5px;color:var(--ink-3);margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
   .msg .warn{color:var(--danger);font-weight:600}
@@ -127,6 +130,9 @@
   .meal-macros span{font-size:12px;background:var(--brand-soft);color:var(--brand-deep);
     border-radius:999px;padding:4px 10px;font-weight:600}
   .meal-items{display:flex;flex-direction:column;gap:7px;margin-bottom:12px}
+  .meal-shop{background:#f2fbf5;border:1px dashed #7cc896;border-radius:10px;padding:8px 11px;margin-bottom:12px}
+  .meal-shop .ms-t{font-size:12px;font-weight:600;color:#2b7a4b;margin-bottom:3px}
+  .meal-shop .ms-l{font-size:13px;color:#333;line-height:1.6}
   .mi{display:flex;align-items:center;gap:8px;font-size:13px;padding:8px 10px;
     background:var(--bg);border:1px solid var(--line);border-radius:12px}
   .mi .mi-cat{flex-shrink:0;font-size:10.5px;color:var(--brand-deep);background:var(--brand-soft);
@@ -420,6 +426,29 @@ function renderBot(j){
   txt.className = 'txt';
   txt.textContent = j.data.reply || '（暂无回答）';   // textContent 防 XSS + 保留换行
   d.appendChild(txt);
+  // 语音输出（TTS 适配器，热插拔）：点击 🔊 朗读本条回答；服务不可用/失败 → toast 降级
+  const spk = document.createElement('button');
+  spk.className = 'spk';
+  spk.textContent = '🔊';
+  spk.title = '朗读这条回答';
+  spk.onclick = async () => {
+    spk.disabled = true;
+    try {
+      const r = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: j.data.reply || '' })
+      });
+      if (!r.ok) { toast('语音服务暂不可用'); return; }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = new Audio(url);
+      a.onended = () => URL.revokeObjectURL(url);
+      a.play();
+    } catch (e) { toast('语音播放失败'); }
+    finally { spk.disabled = false; }
+  };
+  d.appendChild(spk);
   if(j.disclaimer){
     const disc = document.createElement('div');
     disc.className = 'disc';
@@ -562,6 +591,22 @@ function renderMeal(meal){
     items.appendChild(row);
   });
   body.appendChild(items);
+
+  /* 采购清单（P-迭代）：一键展示"要买什么" */
+  if(meal.shopping_list && meal.shopping_list.length){
+    const shop = document.createElement('div');
+    shop.className = 'meal-shop';
+    shop.id = 'mealShoppingList';
+    const st = document.createElement('div');
+    st.className = 'ms-t';
+    st.textContent = '🛒 采购清单';
+    shop.appendChild(st);
+    const ls = document.createElement('div');
+    ls.className = 'ms-l';
+    ls.textContent = meal.shopping_list.map(x => x.food + (x.grams ? ' ' + x.grams + 'g' : '')).join('、');
+    shop.appendChild(ls);
+    body.appendChild(shop);
+  }
 
   /* 做法步骤 */
   if(meal.method && meal.method.length){

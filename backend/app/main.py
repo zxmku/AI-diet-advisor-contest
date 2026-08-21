@@ -21,11 +21,12 @@ from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from jieba import lcut
 from pathlib import Path
+from pydantic import BaseModel, Field
 
 from app import config
 from app.api.schemas import (
@@ -420,6 +421,11 @@ def _build_meal(goal: str, excluded: list[str], meal_time: str = "正餐") -> di
         "goal": goal,
         "meal_time": meal_time,
         "items": items,
+        "shopping_list": [
+            {"food": it["food"], "grams": it.get("grams")}
+            for it in items
+            if it.get("food")
+        ],  # 采购清单（P-迭代）：由一餐 items 派生，供前端一键展示"要买什么"
         "total_kcal": round(total_kcal, 1),
         "macros": {k: round(v, 1) for k, v in macros.items()},
         "method": method,
@@ -1336,6 +1342,25 @@ def session_op(req: SessionRequest) -> UnifiedResponse:
         model="local-rules",
         degraded=True,
     )
+
+
+# ── 语音输出（TTS 适配器，热插拔；edge-tts 缺失/失败 → 503 优雅降级）──
+class TTSRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@app.post("/api/tts", response_model=None)
+async def tts(req: TTSRequest):
+    from app import tts_service
+
+    if not tts_service.tts_available():
+        raise HTTPException(status_code=503, detail="语音服务暂不可用")
+    try:
+        audio = await tts_service.text_to_speech(req.text)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("TTS 合成失败（降级）：%s", exc)
+        raise HTTPException(status_code=503, detail="语音合成失败") from exc
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 # ── 前端静态资源（同源提供 demo UI，免 CORS）──
