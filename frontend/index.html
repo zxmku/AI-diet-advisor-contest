@@ -162,6 +162,35 @@
     background:var(--ink);color:#fff;font-size:13px;padding:11px 18px;border-radius:12px;box-shadow:var(--shadow-lg);
     opacity:0;pointer-events:none;transition:.3s;z-index:99;white-space:nowrap}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  /* ── 历史会话抽屉（右侧滑入，风格与 sheet 一致） ──── */
+  #histMask{position:fixed;inset:0;background:rgba(20,30,25,.45);opacity:0;pointer-events:none;transition:.3s;z-index:42}
+  #histMask.show{opacity:1;pointer-events:auto}
+  #histPanel{position:fixed;top:0;right:0;bottom:0;width:min(88%,340px);background:var(--card);
+    box-shadow:var(--shadow-lg);transform:translateX(100%);transition:.32s cubic-bezier(.32,.72,.28,1);
+    z-index:43;display:flex;flex-direction:column}
+  #histPanel.show{transform:none}
+  .hist-head{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
+    padding:calc(12px + var(--safe-top)) 14px 12px;border-bottom:1px solid var(--line)}
+  .hist-head b{font-size:15px;color:var(--ink)}
+  .hist-head .icon-btn{background:var(--bg);font-size:14px;color:var(--ink-2)}
+  .hist-sub{flex-shrink:0;font-size:11px;color:var(--ink-3);padding:8px 16px 2px}
+  .hist-list{flex:1;overflow-y:auto;padding:10px 12px calc(16px + var(--safe-bottom));-webkit-overflow-scrolling:touch}
+  .hist-item{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:12px 13px;
+    margin-bottom:10px;cursor:pointer;transition:.2s}
+  .hist-item:active{background:var(--brand-soft);border-color:var(--brand)}
+  .hist-item.current{border-color:var(--brand);background:var(--brand-soft)}
+  .hist-item-t{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink-3)}
+  .hist-tag{font-size:10px;color:var(--brand-deep);background:var(--brand-soft);border:1px solid var(--brand);
+    border-radius:999px;padding:1px 7px}
+  .hist-item-s{font-size:13.5px;color:var(--ink);margin-top:4px;line-height:1.5;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+  .hist-empty{text-align:center;color:var(--ink-3);font-size:13px;padding:64px 24px;line-height:1.9}
+  .hist-empty b{font-size:30px;display:block;margin-bottom:8px}
+  .hist-loading{text-align:center;color:var(--ink-3);font-size:13px;padding:64px 24px}
+  .hist-loading i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--brand);
+    margin:0 3px;animation:bounce 1.2s infinite}
+  .hist-loading i:nth-child(2){animation-delay:.15s}.hist-loading i:nth-child(3){animation-delay:.3s}
 </style>
 </head>
 <body>
@@ -176,6 +205,7 @@
     </div>
     <div class="top-right">
       <div class="badge" id="modelbadge"><i></i><span id="modelbadgeTxt">在线</span></div>
+      <button class="icon-btn" onclick="openHistory()" title="历史会话" id="historyBtn">🕘</button>
       <button class="icon-btn" onclick="openSheet()" title="我的健康目标">🎯</button>
     </div>
   </header>
@@ -242,6 +272,17 @@
 
 <div id="toast">⚠️ <span id="toastTxt"></span></div>
 
+<!-- 历史会话抽屉 -->
+<div id="histMask" onclick="closeHistory()"></div>
+<div id="histPanel">
+  <div class="hist-head">
+    <b>🕘 历史会话</b>
+    <button class="icon-btn" onclick="closeHistory()" title="关闭">✕</button>
+  </div>
+  <div class="hist-sub" id="histSub">过往对话记录保存在本机</div>
+  <div class="hist-list" id="histList"></div>
+</div>
+
 <script>
 /* ═══ 时间感知问候（v2.0 内核：时间感知） ═══ */
 (function(){
@@ -306,7 +347,7 @@ function applyPlan(key){
 
 /* ═══ 会话持久化（UID/SID 存 localStorage，刷新后保留） ═══ */
 const UID = localStorage.getItem('hp_uid') || ('hp-user-' + Math.random().toString(36).slice(2, 10));
-const SID = localStorage.getItem('hp_sid') || ('hp-session-' + Math.random().toString(36).slice(2, 10));
+let SID = localStorage.getItem('hp_sid') || ('hp-session-' + Math.random().toString(36).slice(2, 10));
 localStorage.setItem('hp_uid', UID);
 localStorage.setItem('hp_sid', SID);
 
@@ -451,6 +492,111 @@ async function send(){
 
 /* 输入框自适应高度 */
 input.addEventListener('input', ()=>{ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight,110)+'px'; });
+
+/* ═══ 历史会话面板（GET /api/history · 会话列表 + 载入会话） ═══ */
+function openHistory(){
+  closeSheet();   // 避免与人群抽屉叠加
+  document.getElementById('histMask').classList.add('show');
+  document.getElementById('histPanel').classList.add('show');
+  loadHistory();
+}
+function closeHistory(){
+  document.getElementById('histMask').classList.remove('show');
+  document.getElementById('histPanel').classList.remove('show');
+}
+
+/* 拉取会话列表（真实读库，失败给空态 + toast，不崩） */
+async function loadHistory(){
+  const list = document.getElementById('histList');
+  list.innerHTML = '<div class="hist-loading">加载中<i></i><i></i><i></i></div>';
+  try{
+    const r = await fetch('/api/history?user_id=' + encodeURIComponent(UID));
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    renderSessions((j && j.data && j.data.sessions) || []);
+  }catch(e){
+    list.innerHTML = '<div class="hist-empty"><b>📡</b>历史记录加载失败<br><span>请检查网络后重试</span></div>';
+    toast('历史记录加载失败');
+  }
+}
+
+/* 渲染会话列表：消息条数 + 首条用户消息摘要；当前会话高亮 */
+function renderSessions(sessions){
+  const list = document.getElementById('histList');
+  list.innerHTML = '';
+  if(!sessions || !sessions.length){
+    list.innerHTML = '<div class="hist-empty"><b>📭</b>还没有历史会话<br><span>开始一段对话后，记录会自动保存在这里</span></div>';
+    return;
+  }
+  sessions.forEach(s => {
+    const it = document.createElement('div');
+    it.className = 'hist-item' + (s.session_id === SID ? ' current' : '');
+    const raw = (s.first_message || '').trim();
+    const snippet = raw ? (raw.length > 32 ? raw.slice(0, 32) + '…' : raw) : '（该会话暂无用户提问）';
+    const t = document.createElement('div');
+    t.className = 'hist-item-t';
+    const cnt = document.createElement('span');
+    cnt.textContent = '💬 ' + s.message_count + ' 条消息';
+    t.appendChild(cnt);
+    if(s.session_id === SID){
+      const tag = document.createElement('span');
+      tag.className = 'hist-tag';
+      tag.textContent = '当前';
+      t.appendChild(tag);
+    }
+    const sdiv = document.createElement('div');
+    sdiv.className = 'hist-item-s';
+    sdiv.textContent = snippet;
+    it.appendChild(t); it.appendChild(sdiv);
+    it.onclick = () => loadSession(s.session_id);
+    list.appendChild(it);
+  });
+}
+
+/* 载入某会话：渲染其 messages 到聊天流，并把当前 SID 切到该会话 */
+async function loadSession(sid){
+  try{
+    const r = await fetch('/api/history?user_id=' + encodeURIComponent(UID) + '&session_id=' + encodeURIComponent(sid));
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const messages = (j && j.data && j.data.messages) || [];
+    renderHistoryMessages(messages);
+    SID = sid;
+    localStorage.setItem('hp_sid', SID);
+    closeHistory();
+    toast('已切换到该会话，继续提问会接着聊');
+  }catch(e){
+    toast('会话加载失败，请重试');
+  }
+}
+
+/* 把历史 messages（user/assistant）渲染进聊天流，替换现有内容 */
+function renderHistoryMessages(messages){
+  msgs.innerHTML = '';
+  (messages || []).forEach(m => {
+    if(m.role === 'user'){
+      addMsg(escapeHtml(m.content || ''), 'me');
+    } else if(m.role === 'assistant'){
+      const d = document.createElement('div');
+      d.className = 'msg ai';
+      const txt = document.createElement('div');
+      txt.className = 'txt';
+      txt.textContent = m.content || '（暂无回答）';
+      d.appendChild(txt);
+      if(m.sources && m.sources.length){
+        const s = document.createElement('div');
+        s.className = 'src';
+        s.innerHTML = '📚 来源：' + m.sources.map(x =>
+          escapeHtml(x.source) + ' · ' + escapeHtml(x.chapter) + ' · ' + escapeHtml(x.section)
+        ).join('　|　');
+        d.appendChild(s);
+      }
+      msgs.appendChild(d);
+    }
+  });
+  if(!messages || !messages.length) addMsg('该会话暂无消息', 'ai');
+  scroll();
+}
 
 /* ═══ 启动：健康检查更新模型徽标 + 初始真实推荐卡 ═══ */
 fetch('/health').then(r=>r.json()).then(j=>{

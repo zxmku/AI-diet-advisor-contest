@@ -519,11 +519,35 @@ def history(
         messages = [
             {"role": m.role, "content": m.content, "sources": m.sources} for m in msgs
         ]
-        sessions = (
-            [{"session_id": session_id, "message_count": len(messages)}]
-            if session_id and messages
-            else []
-        )
+        if session_id:
+            sessions = (
+                [{"session_id": session_id, "message_count": len(messages)}]
+                if messages
+                else []
+            )
+        else:
+            # 未指定 session_id：按会话聚合，供前端历史面板列出全部会话。
+            # messages 按 id 升序；按每个会话最后一条消息 id 排序，最新活跃的会话在前。
+            agg: dict[str, dict] = {}
+            for m in msgs:
+                sid = m.session_id
+                if sid not in agg:
+                    agg[sid] = {
+                        "session_id": sid,
+                        "message_count": 0,
+                        "first_message": "",
+                        "_last_id": m.id,
+                    }
+                agg[sid]["message_count"] += 1
+                agg[sid]["_last_id"] = m.id
+                if not agg[sid]["first_message"] and m.role == "user":
+                    agg[sid]["first_message"] = m.content
+            sessions = [
+                agg[sid]
+                for sid in sorted(agg, key=lambda s: agg[s]["_last_id"], reverse=True)
+            ]
+            for s in sessions:
+                s.pop("_last_id", None)
     finally:
         db.close()
     return make_response(
