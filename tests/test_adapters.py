@@ -174,6 +174,22 @@ def test_decision_not_hijack_numeric_and_chat(monkeypatch):
     assert r2.json()["data"].get("intent") != "decision", "抱怨配送不应触发决策"
     assert r3.status_code == 200
     assert r3.json()["data"].get("intent") != "decision", "闲聊不应触发决策"
+
+
+def test_decision_does_not_bypass_medication_refuse():
+    """R2-class MEDIUM 回归：用药咨询含店名/点单词也必须先拒药（红线②）。"""
+    from app.main import app
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "在麦当劳吃布洛芬可以吗"},
+        )
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d.get("intent") != "decision", "用药咨询不得被决策分支劫持"
+    assert "不提供用药建议" in d["reply"], "用药咨询必须拒药"
+    assert r.json().get("disclaimer"), "用药咨询必须带免责"
     assert r4.status_code == 200
     d4 = r4.json()["data"]
     assert d4["intent"] == "nutrition_lookup", f"表内食材数值问应命中速查表: {d4['intent']}"
