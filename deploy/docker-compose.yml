@@ -7,7 +7,8 @@ services:
       dockerfile: deploy/Dockerfile
     container_name: healthpick
     ports:
-      - "8000:8000"
+      # 演示端口对齐：评委/预览走 8137，内部服务仍监听 8000
+      - "8137:8000"
     environment:
       # 进阶2：填入 DeepSeek Key 即升级为 LLM 动态生成；留空则纯规则降级
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
@@ -19,3 +20,7 @@ services:
     # 数据卷持久化（SQLite WAL 文件）：仅挂载数据目录，代码来自镜像，两者互不覆盖
     volumes:
       - hp_data:/app/data
+
+# 命名卷：持久化 SQLite 数据（见上方 service 的挂载）
+volumes:
+  hp_data:
