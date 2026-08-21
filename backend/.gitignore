@@ -6,6 +6,10 @@
 # 密钥与本地配置
 .env
 
+# 项目内密钥箱：密文与私钥绝不进版本库（vault.pub 公钥可安全提交）
+*.vsec
+local.key
+
 # Python 缓存
 __pycache__/
 *.pyc

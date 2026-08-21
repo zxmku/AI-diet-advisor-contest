@@ -42,6 +42,7 @@ from app.database import SessionLocal, init_db
 from app import models
 from app.retrieval import SourceChunk, get_retriever
 from app import nutrition_lookup
+from app import llm
 from app.middleware.guard import (
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -102,6 +103,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "llm_key_set": bool(config.DEEPSEEK_API_KEY),
+        "llm_model": config.DEEPSEEK_MODEL if config.DEEPSEEK_API_KEY else None,
         "database": "sqlite" if config.DATABASE_URL.startswith("sqlite") else "external",
         # BUG-5 加固：暴露营养速查表就绪状态，使静默降级可被一眼观测。
         "nutrition_table_ready": nutrition_lookup.is_nutrition_table_ready(),
@@ -290,6 +292,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
 
     reply = ""
     intent = "nutrition_qa"
+    model_tag = "local-rules"
+    degraded = True
 
     # ── BUG-5 数值问答确定性工具命中（团长指令：数值必须工具计算，禁止模型推理）──
     # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
@@ -343,18 +347,34 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             intent = "chitchat"
         else:
             top = _pick_reply_chunk(chunks, message)
-            snippet = top.content.strip()
-            if len(snippet) > 600:
-                snippet = snippet[:600] + "…（更多见下方来源）"
-            if is_medication_query(message):
-                # 拒答用药，仅给膳食参考
-                reply = (
-                    "本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\n"
-                    f"【{top.chapter} · {top.section}】\n{snippet}"
-                )
-            else:
-                reply = f"【{top.chapter} · {top.section}】\n{snippet}"
             intent = "platform" if top.source == "C" else "nutrition_qa"
+            # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
+            # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
+            used_llm = False
+            if llm.is_enabled() and not is_medication_query(message):
+                llm_reply = llm.synthesize(
+                    message,
+                    chunks,
+                    history=_recent_user_messages(req.session_id, 3),
+                )
+                if llm_reply:
+                    reply = llm_reply
+                    model_tag = config.DEEPSEEK_MODEL
+                    degraded = False
+                    used_llm = True
+            # 未启用 LLM 或合成失败 -> 本地规则兜底（绝不裸奔）
+            if not used_llm:
+                snippet = top.content.strip()
+                if len(snippet) > 600:
+                    snippet = snippet[:600] + "…（更多见下方来源）"
+                if is_medication_query(message):
+                    # 拒答用药，仅给膳食参考
+                    reply = (
+                        "本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\n"
+                        f"【{top.chapter} · {top.section}】\n{snippet}"
+                    )
+                else:
+                    reply = f"【{top.chapter} · {top.section}】\n{snippet}"
 
     if excluded:
         reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
@@ -363,8 +383,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     return make_response(
         {"reply": reply, "intent": intent, "goal_tag": None},
         sources=sources,
-        model="local-rules",
-        degraded=True,
+        model=model_tag,
+        degraded=degraded,
         disclaimer=disclaimer,
     )
 
