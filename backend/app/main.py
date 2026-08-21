@@ -149,10 +149,33 @@ _GOAL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "调理": ("控糖", "血糖", "稳糖", "糖尿病", "高血糖", "血糖高", "糖友", "慢病", "三高"),
 }
 
+# DEFECT-B 修复：纯请求语义关键词——命中说明是「求方案/要推荐」而非个人目标声明；
+# 与「我/我的/本人」或健康状态表述同现时才视为个人声明（避免把「推荐减脂方案」这类
+# 请求语义误判为个人目标，从而覆盖已有 goal_tag）。
+_REQUEST_KEYWORDS: tuple[str, ...] = ("推荐", "方案", "食谱", "计划", "怎么吃", "给我")
+_PERSONAL_PRONOUNS: tuple[str, ...] = ("我", "我的", "本人")
+_HEALTH_STATE_PHRASES: tuple[str, ...] = (
+    "血糖高", "高血糖", "糖尿病", "三高", "血压高", "尿酸高",
+    "减肥中", "瘦身中", "在减肥", "想减肥", "想减脂", "在减脂", "想增肌", "在增肌", "增肌中",
+)
+
 
 def _detect_goal(message: str) -> str | None:
-    """从消息中识别人群目标（减脂/增肌/调理）；未命中返回 None，不覆盖既有画像。"""
+    """从消息中识别人群目标（减脂/增肌/调理）；未命中返回 None，不覆盖既有画像。
+
+    DEFECT-B 修复：纯子串匹配会把「推荐减脂方案」这类**请求语义**误判为个人目标，
+    从而覆盖已有 goal_tag。此处仅当消息含个人意图/健康状态声明时才判定：
+    - 命中「我/我的/本人」且非纯请求词（推荐/方案/食谱/计划/怎么吃/给我）→ 个人声明；
+    - 命中健康状态表述（血糖高/减肥中/想增肌等）→ 个人声明；
+    - 纯请求词命中且无个人/健康声明（如「推荐减脂方案」）→ 一律返回 None，不写库。
+    """
     text = message or ""
+    request_hit = any(rk in text for rk in _REQUEST_KEYWORDS)
+    personal_claim = any(p in text for p in _PERSONAL_PRONOUNS)
+    health_claim = any(h in text for h in _HEALTH_STATE_PHRASES)
+    # 纯请求语义：用户在「要方案/求推荐」而非陈述自身状态 → 不算目标声明
+    if request_hit and not personal_claim and not health_claim:
+        return None
     for goal, keywords in _GOAL_KEYWORDS.items():
         if any(kw in text for kw in keywords):
             return goal
@@ -485,6 +508,15 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         _update_session_profile(req.user_id, req.session_id, goal_tag=detected_goal)
 
     # P2 过敏追问：仅首次声明时，以追问开头确认「已记录」；未配置话术的 id 跳过
+    # DEFECT-A 修复：R3 剔除循环只作用于**原回复正文**——先对原 reply 剔除再拼接追问
+    # （ALLERGY_FOLLOWUP 含花生/牛奶等精确食材名，绝不经剔除循环，避免被替换成
+    # 「（已按禁忌剔除）」乱码）；排除提示仍追加在最终 reply 尾部（追问之后）。
+    if excluded:
+        # 红线②「禁忌必排除」：先剔除原回复正文中出现的禁忌食材（长名优先，
+        # 避免短名替换破坏长名）。
+        for f in sorted(excluded, key=len, reverse=True):
+            reply = reply.replace(f, "（已按禁忌剔除）")
+
     if new_allergies:
         follow_up_parts = [
             ALLERGY_FOLLOWUP[aid]
@@ -496,11 +528,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             reply = f"{follow_up}\n\n{reply}" if reply else follow_up
 
     if excluded:
-        # 红线②「禁忌必排除」：先把正文中出现的禁忌食材剔除（长名优先，避免
-        # 短名替换破坏长名），再追加排除提示语（提示语仍列全清单供用户知晓）。
-        # 确认排除提示始终保留在 reply 尾部（追问之后）。
-        for f in sorted(excluded, key=len, reverse=True):
-            reply = reply.replace(f, "（已按禁忌剔除）")
+        # 确认排除提示始终保留在 reply 尾部（追问之后），列全清单供用户知晓。
         reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
 
     _persist_turn(req.user_id, req.session_id, message, reply, [c.model_dump() for c in chunks])

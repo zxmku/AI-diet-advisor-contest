@@ -80,3 +80,52 @@ def test_p2_goal_dynamic_update(client):
     sess = _session_row("p2b")
     assert sess is not None
     assert sess.goal_tag == "调理"
+
+
+# 坚果过敏追问话术原文（compliance.ALLERGY_FOLLOWUP["nut_allergy"] 逐字）：
+# 追问里的精确食材名（花生/腰果/杏仁）必须原样保留，绝不能被 R3 剔除循环替换成乱码。
+_FOLLOWUP_NUT = (
+    "收到，已为您记录坚果过敏。为了更精准地帮您避开，"
+    "方便告诉我具体是哪一类坚果吗？比如花生、腰果、杏仁，还是核桃？"
+)
+
+
+def test_p2_allergy_followup_keeps_original_text(client):
+    """DEFECT-A 回归：坚果过敏追问原文完整（花生/腰果/杏仁 不被 R3 剔除循环乱码化），
+    追问不经剔除循环、排除提示仍在尾部。"""
+    r = _chat(client, "我对坚果过敏", session_id="p2d", user_id="u_p2")
+    assert r.status_code == 200
+    reply = r.json()["data"]["reply"]
+    # 追问原文完整且位于回复开头（若被剔除循环乱码化，此精确串必然断裂）
+    assert reply.startswith(_FOLLOWUP_NUT), f"追问原文被破坏: {reply[:80]}"
+    # 追问段不得出现「（已按禁忌剔除）」乱码（追问文本完全不经剔除循环）
+    assert "（已按禁忌剔除）" not in _FOLLOWUP_NUT
+    # 排除提示仍在尾部（追问之后）
+    assert "已按您的禁忌排除以下食材" in reply
+    assert reply.index("已按您的禁忌排除以下食材") > len(_FOLLOWUP_NUT)
+    # 红线 R3 正文剔除仍生效：排除提示之前的正文部分（追问之后）中，正文若含禁忌
+    # 食材应被替换为「（已按禁忌剔除）」（知识库脂肪/餐盘块含「坚果」「牛油果」）。
+    pre = _pre_exclusion_part(reply)
+    body_part = pre[len(_FOLLOWUP_NUT):]
+    assert "（已按禁忌剔除）" in body_part, f"R3 正文剔除失效: {body_part[:120]}"
+
+
+def test_p2_request_word_does_not_overwrite_goal(client):
+    """DEFECT-B 回归：已有 goal=调理 的会话，用户问「推荐减脂方案」（请求语义）
+    → goal_tag 不被覆盖为减脂，仍保持调理。"""
+    r_sess = client.post(
+        "/api/session",
+        json={
+            "user_id": "u_p2",
+            "session_id": "p2c",
+            "action": "new",
+            "goal_tag": "调理",
+            "allergies": [],
+        },
+    )
+    assert r_sess.status_code == 200
+    r = _chat(client, "推荐减脂方案", session_id="p2c", user_id="u_p2")
+    assert r.status_code == 200
+    sess = _session_row("p2c")
+    assert sess is not None
+    assert sess.goal_tag == "调理"
