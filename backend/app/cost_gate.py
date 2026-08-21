@@ -29,7 +29,9 @@ from app import config
 
 logger = logging.getLogger("healthpick.cost_gate")
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"  # backend/data
+_DATA_DIR = Path(
+    os.environ.get("HEALTHPICK_DATA_DIR") or (Path(__file__).resolve().parent.parent / "data")
+)  # backend/data；可用 HEALTHPICK_DATA_DIR 覆盖（测试隔离/部署自定义）
 _LEDGER_PATH = _DATA_DIR / "cost_ledger.json"
 _CACHE_PATH = _DATA_DIR / "llm_cache.json"
 

@@ -51,6 +51,7 @@ from app.database import SessionLocal, init_db
 from app import models
 from app.retrieval import SourceChunk, get_retriever
 from app import nutrition_lookup
+from app import health_state
 from app import llm
 from app.middleware.guard import (
     RateLimitMiddleware,
@@ -695,6 +696,7 @@ def _handle_companion(
             history=list(recent),
             session_id=req.session_id,
             excluded_foods=excluded or None,
+            state_context=health_state.build_state_context(req.user_id),
         )
         if llm_reply:
             return llm_reply, config.DEEPSEEK_MODEL, False
@@ -1020,6 +1022,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             history=_recent_user_messages(req.session_id, 3),
                             session_id=req.session_id,
                             excluded_foods=excluded or None,
+                            state_context=health_state.build_state_context(req.user_id),
                         )
                     if llm_reply:
                         reply = llm_reply
@@ -1045,6 +1048,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         history=_recent_user_messages(req.session_id, 3),
                         session_id=req.session_id,
                         excluded_foods=excluded or None,
+                        state_context=health_state.build_state_context(req.user_id),
                     )
                     if llm_reply:
                         reply = llm_reply
@@ -1361,6 +1365,24 @@ async def tts(req: TTSRequest):
         logger.warning("TTS 合成失败（降级）：%s", exc)
         raise HTTPException(status_code=503, detail="语音合成失败") from exc
     return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.get("/api/state", response_model=UnifiedResponse)
+def health_state_endpoint(user_id: str = Query(min_length=1, max_length=64)) -> UnifiedResponse:
+    """健康状态引擎（M2/M3）：连续坚持天数 + 今日饮食总结 + AI 欢迎语（M18）。
+
+    供前端首屏展示「记得你」与「坚持情况」，为饮食决策服务。
+    """
+    return make_response(
+        {
+            "streak": health_state.get_streak(user_id),
+            "today_summary": health_state.get_today_summary(user_id),
+            "greeting": health_state.build_greeting(user_id),
+        },
+        sources=[],
+        model="local-rules",
+        degraded=True,
+    )
 
 
 # ── 前端静态资源（同源提供 demo UI，免 CORS）──

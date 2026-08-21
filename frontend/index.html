@@ -101,6 +101,7 @@
   .msg.ai .spk{margin-top:6px;background:#e8590c;color:#fff;border:none;border-radius:999px;padding:3px 11px;font-size:12px;cursor:pointer;align-self:flex-start;opacity:.88}
   .msg.ai .spk:hover{opacity:1}
   .msg.ai .spk:disabled{opacity:.4;cursor:default}
+  .msg.ai .state-chip{margin-top:8px;display:inline-block;background:linear-gradient(135deg,#e8590c,#f08c00);color:#fff;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600}
   .msg.me{background:var(--brand);color:#fff;border-bottom-right-radius:6px;align-self:flex-end}
   .msg .src{display:block;font-size:10.5px;color:var(--ink-3);margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
   .msg .warn{color:var(--danger);font-weight:600}
@@ -874,6 +875,25 @@ fetch('/health').then(r=>r.json()).then(j=>{
       if(messages && messages.length){ hasHistory = true; renderHistoryMessages(messages); }
     }
   }catch(e){ /* 后端不可达：保留静态首屏（欢迎语+场景卡） */ }
+  if(!hasHistory){
+    /* 健康状态引擎（M2/M3/M18）：展示连续坚持天数/今日记录，让「记得你」一眼可见 */
+    try{
+      const sr = await fetch('/api/state?user_id=' + encodeURIComponent(UID));
+      if(sr.ok){
+        const sj = await sr.json();
+        const st = (sj && sj.data) || {};
+        const w = document.getElementById('welcomeMsg');
+        if(w){
+          const chip = document.createElement('div');
+          chip.className = 'state-chip';
+          if(st.streak > 0) chip.textContent = '💪 连续坚持 ' + st.streak + ' 天';
+          else if(st.today_summary && st.today_summary.meal_count > 0) chip.textContent = '📒 今天已记 ' + st.today_summary.meal_count + ' 餐';
+          else chip.textContent = '🌱 从记录今天这一餐开始';
+          if(chip.textContent) w.appendChild(chip);
+        }
+      }
+    }catch(e){}
+  }
   if(!hasHistory) scroll();
 })();
 </script>

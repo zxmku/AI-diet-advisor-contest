@@ -99,6 +99,7 @@ def synthesize(
     temperature: float = 0.3,
     session_id: str | None = None,
     excluded_foods: list[str] | None = None,
+    state_context: str | None = None,
 ) -> str | None:
     """基于检索块合成自然语言答复。
 
@@ -153,6 +154,9 @@ def synthesize(
     # 时间感知注入：当前时段问候与建议焦点（管道适配器，热插拔）
     _tctx = get_meal_time_context()
     system_prompt += f"\n当前时段：{_tctx['period']}（{_tctx['focus']}）"
+    # 成长记忆注入：用户近期饮食状态（昨天/今天/坚持情况），供「结合你的情况」式回答
+    if state_context:
+        system_prompt += f"\n【用户近期状态】{state_context}"
     messages = [
         {
             "role": "system",

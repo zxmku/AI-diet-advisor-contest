@@ -30,6 +30,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB.as_posix()}"
 os.environ["DEEPSEEK_API_KEY"] = ""
 # 限流阈值调高，避免整套用例共用同一 IP 桶时被误杀（不影响被测逻辑）。
 os.environ["HEALTHPICK_RATE_LIMIT_PER_MIN"] = "100000"
+# cost_gate 账本/缓存同样隔离到临时目录（否则测试会写真实 backend/data/*.json，污染运行时数据）
+os.environ["HEALTHPICK_DATA_DIR"] = str(_TMP_DIR / "data")
 # 保证测试以 dev 环境运行（docs/openapi 可见，与生产差异最小）。
 os.environ.setdefault("HEALTHPICK_ENV", "dev")
 
