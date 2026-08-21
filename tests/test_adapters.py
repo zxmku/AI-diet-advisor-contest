@@ -141,7 +141,12 @@ def test_decision_allergy_filter():
 
 
 def test_decision_not_hijack_numeric_and_chat(monkeypatch):
-    """QA MEDIUM/LOW 回归：数值问答不被决策劫持；闲聊/抱怨不误触发决策。"""
+    """QA MEDIUM/LOW 回归：数值问答不被决策劫持；闲聊/抱怨不误触发决策。
+
+    - 带场景名的数值问必须走数值路径（命中返回速查表精确值 / 表外诚实 miss），
+      绝不能被决策劫持；
+    - 抱怨配送、闲聊（仅含场景词无意向）不误触发决策。
+    """
     from app.main import app
 
     with TestClient(app) as c:
@@ -157,6 +162,10 @@ def test_decision_not_hijack_numeric_and_chat(monkeypatch):
             "/api/chat",
             json={"user_id": "u", "session_id": "s", "message": "在麦当劳聊聊减脂"},
         )
+        r4 = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "便利店鸡胸肉多少千卡"},
+        )
     assert r1.status_code == 200
     d1 = r1.json()["data"]
     # 核心回归：带场景名的数值问必须走数值路径（hit 或诚实 miss），绝不能被决策劫持
@@ -165,6 +174,10 @@ def test_decision_not_hijack_numeric_and_chat(monkeypatch):
     assert r2.json()["data"].get("intent") != "decision", "抱怨配送不应触发决策"
     assert r3.status_code == 200
     assert r3.json()["data"].get("intent") != "decision", "闲聊不应触发决策"
+    assert r4.status_code == 200
+    d4 = r4.json()["data"]
+    assert d4["intent"] == "nutrition_lookup", f"表内食材数值问应命中速查表: {d4['intent']}"
+    assert "165" in d4["reply"], f"便利店鸡胸肉应返回速查表精确值 165: {d4['reply'][:60]}"
 
 
 # ── 3. 采购清单（P3 一餐派生）────────────────────────────────────
