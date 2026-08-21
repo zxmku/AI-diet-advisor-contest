@@ -118,6 +118,22 @@
     background:var(--card);color:var(--brand-deep);cursor:pointer;transition:.2s;min-height:44px}
   .rec .act button:hover{background:var(--brand-soft);border-color:var(--brand)}
 
+  /* 场景入口卡片（首屏，无历史会话时展示） */
+  .scene{max-width:88%;align-self:flex-start;width:100%;background:var(--card);border:1px solid var(--line);
+    border-radius:20px;box-shadow:var(--shadow);padding:13px 13px 12px;animation:rise .35s ease}
+  .scene-t{font-size:12px;color:var(--ink-2);font-weight:700;margin:0 2px 10px;display:flex;align-items:center;gap:6px}
+  .scene-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .sc{font-family:inherit;text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:14px;
+    padding:10px 9px;cursor:pointer;transition:.18s;min-height:66px;display:flex;flex-direction:column;gap:2px}
+  .sc:active{transform:scale(.97);background:var(--brand-soft);border-color:var(--brand)}
+  .sc .sc-em{font-size:20px;line-height:1.2}
+  .sc .sc-lb{font-size:13.5px;font-weight:700;color:var(--ink)}
+  .sc .sc-sb{font-size:10.5px;color:var(--ink-3);line-height:1.35}
+  .sc:disabled{opacity:.55;cursor:default}
+  .sc .sc-spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--brand);border-radius:50%;
+    animation:scspin .7s linear infinite;margin:2px 0}
+  @keyframes scspin{to{transform:rotate(360deg)}}
+
   /* 打字指示器 */
   .typing{display:inline-flex;gap:4px;padding:13px 16px;background:var(--bg);border:1px solid var(--line);
     border-radius:18px;border-bottom-left-radius:6px;align-self:flex-start}
@@ -238,10 +254,21 @@
 
   <!-- 聊天流（主区） -->
   <div class="msgs" id="msgs">
-    <div class="msg ai">
-      👋 晚上好！我是小优。跟我说说你的情况——<br>想减脂、在增肌，还是需要调理血糖血压？或者直接问我"今晚吃什么"，也行。🍽️
+    <!-- 首屏人设欢迎语：仅无历史会话时展示；有历史时 initFirstScreen 会清空并恢复对话 -->
+    <div class="msg ai" id="welcomeMsg">
+      <div class="txt">你好呀！我是你的 AI 膳食顾问小优 👋 减脂、增肌还是慢病调理，或者直接告诉我"今晚想吃什么"，我帮你搭一餐。</div>
     </div>
-    <!-- 真实初始推荐卡由启动时 loadRecommend('减脂') 渲染注入（替代原写死的假 rec 卡） -->
+    <!-- 场景入口卡片：点击调 /api/quick 并把返回的方案卡渲染进聊天流 -->
+    <div class="scene" id="sceneCards">
+      <div class="scene-t">✨ 想从哪开始？点一下，我马上给你方案</div>
+      <div class="scene-grid">
+        <button class="sc" data-action="lose_fat" onclick="runQuick('lose_fat', this)"><span class="sc-em">🔥</span><span class="sc-lb">减脂塑形</span><span class="sc-sb">科学控卡 · 211 餐盘</span></button>
+        <button class="sc" data-action="gain_muscle" onclick="runQuick('gain_muscle', this)"><span class="sc-em">💪</span><span class="sc-lb">增肌强化</span><span class="sc-sb">蛋白优先 · 练后窗口</span></button>
+        <button class="sc" data-action="control_sugar" onclick="runQuick('control_sugar', this)"><span class="sc-em">🩺</span><span class="sc-lb">控糖调理</span><span class="sc-sb">稳糖低GI · 控盐控糖</span></button>
+        <button class="sc" data-action="today_meal" onclick="runQuick('today_meal', this)"><span class="sc-em">🍽️</span><span class="sc-lb">今日食谱</span><span class="sc-sb">7日循环 · 照着吃</span></button>
+      </div>
+    </div>
+    <!-- 方案卡由 renderRec / 历史恢复 渲染注入 -->
   </div>
 
   <!-- 底部输入（常驻） -->
@@ -473,12 +500,42 @@ async function loadRecommend(goalTag){
   }
 }
 
+/* ═══ 场景入口：调 /api/quick 快捷方案（复用 renderRec 渲染） ═══ */
+async function runQuick(action, btn){
+  const scene = document.getElementById('sceneCards');
+  if(!scene || scene.dataset.busy === '1') return;                 // 防连点
+  scene.dataset.busy = '1';
+  const oldHtml = btn.innerHTML;                                   // 加载态：按钮转菊花
+  btn.disabled = true;
+  btn.innerHTML = '<span class="sc-spin"></span><span class="sc-lb">生成中…</span>';
+  const j = await post('/api/quick', { user_id:UID, session_id:SID, action });
+  btn.disabled = false;
+  btn.innerHTML = oldHtml;
+  delete scene.dataset.busy;
+  if(j && j.data && j.data.plans && j.data.plans.length){
+    collapseScene(scene);                                          // 成功后收起卡片区
+    renderRec(j.data.plans[0], j.sources);                         // 复用推荐渲染
+  } else {
+    toast('没拿到方案，换个入口再试');                              // 失败保留卡片可重试
+  }
+}
+/* 收起首屏场景卡片（淡出后移除，避免残留） */
+function collapseScene(scene){
+  if(!scene) return;
+  scene.style.transition = 'opacity .25s ease, transform .25s ease';
+  scene.style.opacity = '0';
+  scene.style.transform = 'translateY(-6px)';
+  setTimeout(()=>{ if(scene.parentNode) scene.remove(); }, 260);
+}
+
 /* ═══ 发送（空输入 / 超长提示 · 打字指示器 · 按钮禁用） ═══ */
 async function send(){
   const q = input.value.trim();
   if(!q){ toast('请输入您的问题'); input.focus(); return; }      // 扣分底线：空输入提示
   if(q.length > 500){ toast('输入内容过长，请精简后重试'); input.value=''; input.style.height='44px'; return; } // 扣分底线：超长提示
   addMsg(escapeHtml(q), 'me');
+  const sceneEl = document.getElementById('sceneCards');            // 进入对话后收起首屏入口
+  if(sceneEl) collapseScene(sceneEl);
   input.value=''; input.style.height='44px';
   /* 加载反馈：打字指示器 */
   const ty = document.createElement('div'); ty.className='typing'; ty.innerHTML='<i></i><i></i><i></i>';
@@ -608,8 +665,19 @@ fetch('/health').then(r=>r.json()).then(j=>{
   if(txt) txt.textContent = '本地规则模式（无 LLM Key）';
 });
 
-/* 加载时渲染一张真实初始推荐卡（替代被删的假 rec 卡） */
-loadRecommend('减脂');
+/* ═══ 首屏判定：无历史→保留欢迎语+场景卡；有历史→恢复该会话对话（欢迎语不重复出现） ═══ */
+(async function initFirstScreen(){
+  let hasHistory = false;
+  try{
+    const r = await fetch('/api/history?user_id=' + encodeURIComponent(UID) + '&session_id=' + encodeURIComponent(SID));
+    if(r.ok){
+      const j = await r.json();
+      const messages = (j && j.data && j.data.messages) || [];
+      if(messages && messages.length){ hasHistory = true; renderHistoryMessages(messages); }
+    }
+  }catch(e){ /* 后端不可达：保留静态首屏（欢迎语+场景卡） */ }
+  if(!hasHistory) scroll();
+})();
 </script>
 </body>
 </html>
