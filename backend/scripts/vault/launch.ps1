@@ -21,7 +21,7 @@ if (-not $key) {
 if (-not $key -or $key.Trim().Length -eq 0) { Write-Host "无密钥，无法启动 LLM 模式。"; exit 1 }
 $env:DEEPSEEK_API_KEY = $key.Trim()
 
-$backendDir = Join-Path $SCRIPT_DIR ".." ".."
+$backendDir = Join-Path $SCRIPT_DIR "..\.."
 $proxy = Join-Path $SCRIPT_DIR "proxy.py"
 Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"Set-Location '$backendDir'; uvicorn app.main:app --host 127.0.0.1 --port 8200`"" -WindowStyle Minimized
 Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"python '$proxy'`"" -WindowStyle Minimized
