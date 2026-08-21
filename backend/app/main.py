@@ -921,6 +921,13 @@ def chat(req: ChatRequest) -> UnifiedResponse:
 
     disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
 
+    # ── R1/R2 修复：一餐前置门槛 ──
+    # 判定顺序：用药硬拦截 → 数值精确问答 → 一餐 → 检索/LLM/其他。
+    # （R1）「晚餐鸡胸肉多少千卡」不得被一餐劫持成追问目标，必须走数值路径返回速查表精确值；
+    # （R2）「吃布洛芬后晚餐吃什么好」不得进一餐，必须走现有拒药路径（拒答+免责）。
+    is_med_query = is_medication_query(message)
+    is_num_query, num_food = nutrition_lookup.is_numeric_lookup_query(message)
+
     # ── P5 饮食管理（记住饮食）+ 情感陪伴（一人食陪聊）：互斥优先于 P3/检索 ──
     # 命中记录/查询/陪伴意图即返回，不落入一餐生成/BM25 检索；问句/求方案语义
     # （什么/推荐/给我做）不当作记录，避免「早餐吃什么好」被误记成台账。
@@ -930,7 +937,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         reply, intent = p5
         model_tag = "local-rules"
         sources = []
-    elif _is_meal_intent(message):
+    elif _is_meal_intent(message) and not is_med_query and not (is_num_query and num_food):
         goal = _meal_goal(message, _session_goal_tag(req.session_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
@@ -952,7 +959,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
         numeric_hit = False
         numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
-        is_num, food = nutrition_lookup.is_numeric_lookup_query(message)
+        is_num, food = is_num_query, num_food
         if is_num and food:
             row = nutrition_lookup.lookup(food)
             if row:

@@ -252,6 +252,28 @@ def test_p3_meal_goal_ask_when_no_goal(client):
     assert "meal" not in body["data"]
 
 
+def test_p3_r1_numeric_lookup_not_hijacked_by_meal(client):
+    """R1 回归：一餐意图不劫持数值问答——
+    「晚餐鸡胸肉多少千卡」须走数值路径返回速查表精确值 165，而不是被劫持成一餐/追问目标。"""
+    r = _chat(client, "晚餐鸡胸肉多少千卡", session_id="p3r1", user_id="u_p3")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] == "nutrition_lookup"
+    assert "165" in body["data"]["reply"], f"未返回速查表精确值: {body['data']['reply'][:80]}"
+    assert "meal" not in body["data"]
+
+
+def test_p3_r2_medication_refuse_priority_over_meal(client):
+    """R2 回归：用药硬拦截优先于一餐——
+    「吃布洛芬后晚餐吃什么好」须先拒答用药（含免责），不进一餐。"""
+    r = _chat(client, "吃布洛芬后晚餐吃什么好", session_id="p3r2", user_id="u_p3")
+    assert r.status_code == 200
+    body = r.json()
+    assert "不提供用药建议" in body["data"]["reply"], f"未拒答用药: {body['data']['reply'][:80]}"
+    assert body.get("disclaimer") and "不构成医疗建议" in body["disclaimer"]
+    assert "meal" not in body["data"]
+
+
 # ═══ P5a 饮食管理（记住饮食）═══
 
 
