@@ -73,8 +73,14 @@ def test_r3_allergy_foods_excluded_in_recommend(client):
     assert "excluded_for_allergy" in plan
 
 
+def _pre_exclusion_part(reply: str) -> str:
+    """取回复中「⚠️ 已按您的禁忌排除」标记之前的部分（即回复正文）。"""
+    marker = "⚠️ 已按您的禁忌排除"
+    return reply.split(marker, 1)[0]
+
+
 def test_r3_chat_reply_notes_exclusion(client):
-    """禁忌必排除：对话回复末尾必须出现禁忌排除提示。"""
+    """禁忌必排除：对话回复正文不得含禁忌食材，末尾出现排除提示清单。"""
     r = _chat(
         client,
         "推荐减脂方案",
@@ -86,6 +92,26 @@ def test_r3_chat_reply_notes_exclusion(client):
     reply = r.json()["data"]["reply"]
     assert "已按您的禁忌排除以下食材" in reply
     assert any(f in reply for f in SEAFOOD_EXCLUDED)
+    # 正文（提示之前）必须干净：不得出现任一海鲜食材名。
+    pre = _pre_exclusion_part(reply)
+    assert not any(f in pre for f in SEAFOOD_EXCLUDED)
+
+
+def test_r3_chat_body_free_of_seafood_qa_scenario(client):
+    """红线②回归（QA 实测场景）：海鲜过敏用户问食谱，正文不得出现任何海鲜字眼。"""
+    r = _chat(
+        client,
+        "一日三餐 食谱 燕麦 鸡胸肉 西兰花",
+        session_id="r3c",
+        user_id="u3",
+        allergies=["seafood_allergy"],
+    )
+    assert r.status_code == 200
+    reply = r.json()["data"]["reply"]
+    pre = _pre_exclusion_part(reply)
+    assert not any(f in pre for f in SEAFOOD_EXCLUDED), (
+        f"回复正文仍含禁忌海鲜: {[f for f in SEAFOOD_EXCLUDED if f in pre]}"
+    )
 
 
 def test_r4_medication_refuse_ibuprofen(client):

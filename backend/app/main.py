@@ -359,6 +359,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
                         history=_recent_user_messages(req.session_id, 3),
                         session_id=req.session_id,
+                        excluded_foods=excluded or None,
                     )
                 if llm_reply:
                     reply = llm_reply
@@ -383,6 +384,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     chunks,
                     history=_recent_user_messages(req.session_id, 3),
                     session_id=req.session_id,
+                    excluded_foods=excluded or None,
                 )
                 if llm_reply:
                     reply = llm_reply
@@ -404,6 +406,10 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     reply = f"【{top.chapter} · {top.section}】\n{snippet}"
 
     if excluded:
+        # 红线②「禁忌必排除」：先把正文中出现的禁忌食材剔除（长名优先，避免
+        # 短名替换破坏长名），再追加排除提示语（提示语仍列全清单供用户知晓）。
+        for f in sorted(excluded, key=len, reverse=True):
+            reply = reply.replace(f, "（已按禁忌剔除）")
         reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
 
     _persist_turn(req.user_id, req.session_id, message, reply, [c.model_dump() for c in chunks])
@@ -454,6 +460,11 @@ def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
         reason = _first_sentence(chunks[0].content)
     foods = [f for f in base["foods"] if f not in excluded_foods(allergy_ids)]
     excl = [f for f in base["foods"] if f in excluded_foods(allergy_ids)]
+    # 红线②「禁忌必排除」：推荐理由（来自素材 B 检索块）若含禁忌食材同样剔除，
+    # 长名优先替换，避免短名替换破坏长名。
+    if excl:
+        for f in sorted(excl, key=len, reverse=True):
+            reason = reason.replace(f, "（已按禁忌剔除）")
     plan = {
         "name": base["name"],
         "kcal_range": base["kcal_range"],

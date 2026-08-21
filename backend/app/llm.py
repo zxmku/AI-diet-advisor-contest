@@ -92,12 +92,15 @@ def synthesize(
     max_tokens: int = 400,
     temperature: float = 0.3,
     session_id: str | None = None,
+    excluded_foods: list[str] | None = None,
 ) -> str | None:
     """基于检索块合成自然语言答复。
 
     返回模型文本；任何失败返回 None（上层降级 local-rules）。
     history 为最近用户消息（旧→新），用于轻量多轮上下文。
     session_id 用于 M17 成本闸门：会话级限速 + 记账归属（可为 None）。
+    excluded_foods 为已声明禁忌食材清单（红线②）：非空时注入系统提示，
+    强制模型回答中严禁出现或推荐这些食材；为空时行为与之前完全一致。
 
     M17 成本闸门（在发起真实 API 调用之前）：
     - 当日预算超限（LLM_DAILY_BUDGET_TOKENS）→ 直接返回 None 自动降级；
@@ -134,10 +137,17 @@ def synthesize(
         return None
 
     grounding = _grounding_text(chunks)
+    # 红线②「禁忌必排除」：用户已声明禁忌时，注入系统提示强制模型不得出现/推荐。
+    system_prompt = _SYSTEM_PROMPT
+    if excluded_foods:
+        system_prompt += (
+            "\n用户已声明以下食物禁忌，回答中严禁出现或推荐这些食材"
+            "（也不要用别名变体暗示）：" + "、".join(excluded_foods)
+        )
     messages = [
         {
             "role": "system",
-            "content": _SYSTEM_PROMPT + "\n\n【参考资料】\n" + grounding,
+            "content": system_prompt + "\n\n【参考资料】\n" + grounding,
         }
     ]
     for h in (history or [])[-3:]:
