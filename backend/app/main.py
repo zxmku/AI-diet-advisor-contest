@@ -52,6 +52,7 @@ from app import models
 from app.retrieval import SourceChunk, get_retriever
 from app import nutrition_lookup
 from app import health_state
+from app import decision_tool
 from app import llm
 from app.middleware.guard import (
     RateLimitMiddleware,
@@ -943,10 +944,23 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     is_med_query = is_medication_query(message)
     is_num_query, num_food = nutrition_lookup.is_numeric_lookup_query(message)
 
+    # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）：分支前解析并按禁忌过滤，
+    # 全部被过滤则候选为 None → 回退常规流程，避免空答复。 ──
+    _decision_cand = decision_tool.resolve(
+        message, _meal_goal(message, _session_goal_tag(req.session_id)) or "减脂"
+    )
+    if _decision_cand and excluded:
+        _decision_cand["items"] = [
+            it for it in _decision_cand["items"] if not any(f in it for f in excluded)
+        ]
+    if _decision_cand and not _decision_cand["items"]:
+        _decision_cand = None
+
     # ── P5 饮食管理（记住饮食）+ 情感陪伴（一人食陪聊）：互斥优先于 P3/检索 ──
     # 命中记录/查询/陪伴意图即返回，不落入一餐生成/BM25 检索；问句/求方案语义
     # （什么/推荐/给我做）不当作记录，避免「早餐吃什么好」被误记成台账。
     meal: dict | None = None
+    decision: dict | None = None
     p5 = _try_p5_intent(req, message, excluded, recent)
     if p5 is not None:
         reply, intent, model_tag, degraded = p5
@@ -968,6 +982,19 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             intent = "meal"
             model_tag = "local-rules"
             sources = _meal_response_sources(meal)
+    elif _decision_cand:
+        # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）──
+        # 候选已在分支前解析并按禁忌过滤；纯行为决策、不引用素材外精确数值（红线⑤）。
+        reply = (
+            f"【点单决策】在{_decision_cand['scenario']}，按{_decision_cand['goal']}目标这样点👇\n"
+            + "\n".join(f"· {it}" for it in _decision_cand["items"])
+            + (f"\n💡 {_decision_cand['note']}" if _decision_cand.get("note") else "")
+            + "\n（具体以餐厅实际出品为准）"
+        )
+        intent = "decision"
+        model_tag = "local-rules"
+        sources = []
+        decision = _decision_cand
     else:
         # ── BUG-5 数值问答确定性工具命中（红线要求：数值必须工具计算，禁止模型推理）──
         # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
@@ -1107,6 +1134,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         # P3 响应契约：命中一餐意图时附加结构化 meal（可选字段）；未命中保持原契约，
         # 前端检测到 meal 才渲染一餐卡，不破坏现有渲染逻辑。
         data["meal"] = meal
+    if decision is not None:
+        # 点单决策契约：命中点单场景时附加结构化 decision（可选字段）。
+        data["decision"] = decision
     return make_response(
         data,
         sources=sources,

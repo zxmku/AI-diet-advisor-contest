@@ -88,6 +88,58 @@ def test_tts_route_returns_audio(monkeypatch):
     assert b"FAKE_MP3" in r.content
 
 
+# ── 4. 点单决策（Decision Tool · THE LAST 30 SECONDS）───────────────
+def test_decision_resolve_scenarios():
+    from app.decision_tool import resolve
+
+    d = resolve("我在麦当劳，减脂，准备点餐")
+    assert d and d["scenario"] == "麦当劳" and d["goal"] == "减脂"
+    assert any("麦香鸡" in it for it in d["items"])
+    d2 = resolve("帮我点外卖吧", "增肌")
+    assert d2 and d2["scenario"] == "中餐外卖"
+    assert resolve("今天天气不错") is None
+
+
+def test_decision_api_flow():
+    import re
+
+    from app.main import app
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "我在麦当劳，准备点餐"},
+        )
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["intent"] == "decision"
+    assert d["decision"]["scenario"] == "麦当劳"
+    assert "【点单决策】" in d["reply"]
+    # 数值纪律（红线⑤）：行为决策不引用素材外精确数值，回复不应含"数字+千卡"
+    assert not re.search(r"\d+\s*千卡", d["reply"])
+
+
+def test_decision_allergy_filter():
+    from app.main import app
+
+    # 便利店增肌模板含"牛奶" → 乳糖不耐受应被过滤，点单建议无乳制品
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/chat",
+            json={
+                "user_id": "u",
+                "session_id": "s",
+                "message": "在便利店，准备点餐，我想增肌",
+                "allergies": ["lactose_intolerance"],
+            },
+        )
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["intent"] == "decision"
+    items = "".join(d["decision"]["items"])
+    assert "牛奶" not in items, f"点单建议不应含禁忌食材: {items}"
+
+
 # ── 3. 采购清单（P3 一餐派生）────────────────────────────────────
 def test_meal_shopping_list(monkeypatch):
     from app.main import app
