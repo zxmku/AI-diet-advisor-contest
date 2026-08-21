@@ -15,8 +15,11 @@ P3「从问题到一餐」：
 """
 from __future__ import annotations
 
+from app import config
+from app import llm
 from app import models
 from app import nutrition_lookup
+from app.cost_gate import cost_gate
 from app.database import SessionLocal
 
 # 海鲜过敏（seafood_allergy）在 knowledge/taboo_map.json 中声明的排除食材。
@@ -332,3 +335,41 @@ def test_p5_companion_empathy(client):
         or ("简单快手" in reply)
         or ("一个人" in reply)
     ), f"回复缺共情或轻建议: {reply[:100]}"
+
+
+def test_p5_companion_model_labeling(client, monkeypatch):
+    """进阶2 模型来源标注诚实性：陪伴分支 LLM 成功 → meta.model=DEEPSEEK_MODEL 且 degraded=False；
+    LLM 失败降级 → meta.model=local-rules 且 degraded=True（不误标）。"""
+    # 隔离成本闸门：测试不得读写 backend/data 账本与缓存（QA 实测数据），保持确定性。
+    monkeypatch.setattr(cost_gate, "check_budget", lambda: True)
+    monkeypatch.setattr(cost_gate, "check_rate", lambda session_id=None: True)
+    monkeypatch.setattr(cost_gate, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cost_gate, "cache_get", lambda key: None)
+    monkeypatch.setattr(cost_gate, "cache_set", lambda key, reply: None)
+
+    monkeypatch.setattr(llm, "is_enabled", lambda: True)
+    fake_reply = "一个人吃饭也要好好吃，我陪你🍚 先吃口热乎的，别饿着。"
+    fake_resp = {
+        "choices": [{"message": {"content": fake_reply}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+    }
+    monkeypatch.setattr(llm, "_post_json", lambda *args, **kwargs: fake_resp)
+
+    # LLM 成功：回复为模型文本，meta 标注 DEEPSEEK_MODEL / degraded=False
+    r1 = _chat(client, "一个人吃饭好孤独", session_id="p5m1", user_id="u_p5m")
+    assert r1.status_code == 200
+    body1 = r1.json()
+    assert body1["data"]["intent"] == "companion"
+    assert body1["data"]["reply"] == fake_reply
+    assert body1["meta"]["model"] == config.DEEPSEEK_MODEL
+    assert body1["meta"]["degraded"] is False
+
+    # LLM 失败（_post_json 返回 None）：降级本地模板 → local-rules / degraded=True
+    monkeypatch.setattr(llm, "_post_json", lambda *args, **kwargs: None)
+    r2 = _chat(client, "加班好累没胃口", session_id="p5m2", user_id="u_p5m")
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["data"]["intent"] == "companion"
+    assert body2["meta"]["model"] == "local-rules"
+    assert body2["meta"]["degraded"] is True
+    assert "我陪你" in body2["data"]["reply"]

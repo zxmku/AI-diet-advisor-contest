@@ -676,8 +676,12 @@ def _companion_local_reply(req: ChatRequest, excluded: list[str]) -> str:
 
 def _handle_companion(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
-) -> str:
-    """情感陪伴：先共情再轻建议。LLM 启用时优先合成（系统提示第 6 条约束），失败降级本地模板。"""
+) -> tuple[str, str, bool]:
+    """情感陪伴：先共情再轻建议。返回 (reply, model_tag, degraded)。
+
+    模型来源标注诚实（进阶2）：LLM 启用且合成成功 → (reply, DEEPSEEK_MODEL, False)，
+    与 chat() 其他 LLM 路径一致；LLM 未启用/失败 → 本地模板 (reply, "local-rules", True)。
+    """
     if llm.is_enabled():
         llm_reply = llm.synthesize(
             message,
@@ -687,24 +691,27 @@ def _handle_companion(
             excluded_foods=excluded or None,
         )
         if llm_reply:
-            return llm_reply
-    return _companion_local_reply(req, excluded)
+            return llm_reply, config.DEEPSEEK_MODEL, False
+    return _companion_local_reply(req, excluded), "local-rules", True
 
 
 def _try_p5_intent(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str, bool] | None:
     """P5 互斥意图派发：饮食查询 → 饮食记录 → 情感陪伴。
 
-    命中返回 (reply, intent)，chat() 直接采用（不落入 P3/检索，互斥优先）；
+    命中返回 (reply, intent, model_tag, degraded)，chat() 直接采用（不落入 P3/检索）；
     未命中返回 None，保持既有流程。
+    - 饮食记录/查询为规则路径 → model_tag="local-rules"、degraded=True；
+    - 陪伴分支 LLM 成功 → model_tag=DEEPSEEK_MODEL、degraded=False；失败/未启用 → local-rules。
     """
     if _is_diet_query(message):
-        return _handle_diet_query(req.user_id, req.session_id), "diet_query"
+        return _handle_diet_query(req.user_id, req.session_id), "diet_query", "local-rules", True
     if _is_diet_record(message):
-        return _handle_diet_record(req, message, excluded), "diet_record"
+        return _handle_diet_record(req, message, excluded), "diet_record", "local-rules", True
     if _is_companion(message):
-        return _handle_companion(req, message, excluded, recent), "companion"
+        reply, model_tag, degraded = _handle_companion(req, message, excluded, recent)
+        return reply, "companion", model_tag, degraded
     return None
 
 
@@ -934,8 +941,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     meal: dict | None = None
     p5 = _try_p5_intent(req, message, excluded, recent)
     if p5 is not None:
-        reply, intent = p5
-        model_tag = "local-rules"
+        reply, intent, model_tag, degraded = p5
         sources = []
     elif _is_meal_intent(message) and not is_med_query and not (is_num_query and num_food):
         goal = _meal_goal(message, _session_goal_tag(req.session_id))
