@@ -129,3 +129,27 @@ def test_p2_request_word_does_not_overwrite_goal(client):
     sess = _session_row("p2c")
     assert sess is not None
     assert sess.goal_tag == "调理"
+
+
+def test_p2_geiwo_bangwo_request_does_not_overwrite_goal(client):
+    """QA Round2 遗留风险#1 回归：裸「我」不再构成个人声明——
+    已有 goal=调理 的会话发「给我推荐减脂方案」「帮我推荐减脂方案」
+    （纯请求语义，含「我」子串但不含「我的/本人」或健康状态短语）
+    → goal_tag 仍为调理，不被覆盖为减脂。"""
+    r_sess = client.post(
+        "/api/session",
+        json={
+            "user_id": "u_p2",
+            "session_id": "p2e",
+            "action": "new",
+            "goal_tag": "调理",
+            "allergies": [],
+        },
+    )
+    assert r_sess.status_code == 200
+    for msg in ("给我推荐减脂方案", "帮我推荐减脂方案"):
+        r = _chat(client, msg, session_id="p2e", user_id="u_p2")
+        assert r.status_code == 200
+        sess = _session_row("p2e")
+        assert sess is not None
+        assert sess.goal_tag == "调理", f"{msg} 不应覆盖 goal_tag: {sess.goal_tag}"
