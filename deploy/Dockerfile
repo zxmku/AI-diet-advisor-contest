@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制后端与知识库（知识库为本地 JSON，无需外网）
 COPY backend/ ./backend/
 COPY knowledge/ ./knowledge/
+# 前端（后端静态挂载 FRONTEND_DIR=/app/frontend，缺了容器只能出 API 出不了 UI）
+COPY frontend/ ./frontend/
 
 WORKDIR /app/backend
 EXPOSE 8000
