@@ -1,0 +1,82 @@
+"""P2 产品化迭代测试：个性化记忆贯穿（过敏持久化 + 目标动态更新）+ 过敏反问追问。
+
+覆盖团长核心需求「聊起来 + 记得我」：
+- 首次声明过敏 → 回复以追问开头（含「具体」/「哪一类」）+ 末尾确认排除提示；
+- 同一会话再问（不再声明）→ 不再追问（只问一次）+ 记忆已持久化仍排除；
+- 消息隐含人群目标（血糖偏高）→ session.goal_tag 动态更新为调理类。
+
+复用 conftest 的 temp DB 隔离；红线 R3 正文剔除不回退一并校验。
+"""
+from __future__ import annotations
+
+from app import models
+from app.database import SessionLocal
+
+# 海鲜过敏（seafood_allergy）在 knowledge/taboo_map.json 中声明的排除食材。
+SEAFOOD_EXCLUDED = {"虾仁", "三文鱼", "鳕鱼", "鲈鱼", "龙利鱼", "蛤蜊", "鱿鱼"}
+
+
+def _chat(client, message: str, *, session_id: str, user_id: str, allergies: list[str] | None = None):
+    """便捷封装：POST /api/chat。"""
+    return client.post(
+        "/api/chat",
+        json={
+            "user_id": user_id,
+            "session_id": session_id,
+            "message": message,
+            "allergies": allergies or [],
+        },
+    )
+
+
+def _session_row(session_id: str) -> models.Session | None:
+    """直接查 temp DB 中的会话行（断言持久化结果）。"""
+    db = SessionLocal()
+    try:
+        return db.get(models.Session, session_id)
+    finally:
+        db.close()
+
+
+def _pre_exclusion_part(reply: str) -> str:
+    """取回复中「⚠️ 已按您的禁忌排除」标记之前的部分（即回复正文）。"""
+    marker = "⚠️ 已按您的禁忌排除"
+    return reply.split(marker, 1)[0]
+
+
+def test_p2_allergy_followup_once_and_persisted(client):
+    """首次声明过敏：追问开头 + 排除提示末尾；次轮不再追问但记忆仍在（只问一次+持久化）。"""
+    # 第一轮：声明「我对海鲜过敏」→ 回复以追问开头
+    r1 = _chat(client, "我对海鲜过敏", session_id="p2a", user_id="u_p2")
+    assert r1.status_code == 200
+    reply1 = r1.json()["data"]["reply"]
+    assert reply1.startswith("收到，已为您记录海鲜过敏"), f"未以追问开头: {reply1[:50]}"
+    assert ("具体" in reply1) or ("哪一类" in reply1)
+    # 末尾仍保留确认排除提示
+    assert "已按您的禁忌排除以下食材" in reply1
+
+    # 记忆已持久化：sessions.allergies 已写入（后续轮次仍生效）
+    sess = _session_row("p2a")
+    assert sess is not None
+    assert "seafood_allergy" in (sess.allergies or [])
+
+    # 第二轮：不再声明过敏 → 无追问（只问一次），但排除提示仍在（记忆贯穿）
+    r2 = _chat(client, "推荐减脂方案", session_id="p2a", user_id="u_p2")
+    assert r2.status_code == 200
+    reply2 = r2.json()["data"]["reply"]
+    assert not reply2.startswith("收到，已为您记录"), "次轮不应再次追问"
+    assert "已按您的禁忌排除以下食材" in reply2
+    # 红线 R3 不回退：正文（排除提示之前）不得含任一海鲜食材名
+    pre = _pre_exclusion_part(reply2)
+    assert not any(f in pre for f in SEAFOOD_EXCLUDED), (
+        f"回复正文仍含禁忌海鲜: {[f for f in SEAFOOD_EXCLUDED if f in pre]}"
+    )
+
+
+def test_p2_goal_dynamic_update(client):
+    """消息隐含人群目标（血糖偏高）→ session.goal_tag 动态更新为调理类。"""
+    r = _chat(client, "我血糖偏高，三餐该怎么吃", session_id="p2b", user_id="u_p2")
+    assert r.status_code == 200
+    sess = _session_row("p2b")
+    assert sess is not None
+    assert sess.goal_tag == "调理"

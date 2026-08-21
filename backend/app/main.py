@@ -32,6 +32,7 @@ from app.api.schemas import (
     make_response,
 )
 from app.compliance import (
+    ALLERGY_FOLLOWUP,
     DISCLAIMER_STANDARD,
     detect_allergies,
     excluded_foods,
@@ -141,6 +142,22 @@ _GOAL_PLAN_MAP: dict[str, dict] = {
     },
 }
 
+# P2 人群目标关键词 → goal_tag（与 _GOAL_PLAN_MAP 三套方案一致；控糖/血糖/稳糖→调理）
+_GOAL_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "减脂": ("减脂", "减肥", "瘦身", "减重", "燃脂", "掉秤", "瘦下来"),
+    "增肌": ("增肌", "增重", "长肌肉", "练肌肉", "力量训练"),
+    "调理": ("控糖", "血糖", "稳糖", "糖尿病", "高血糖", "血糖高", "糖友", "慢病", "三高"),
+}
+
+
+def _detect_goal(message: str) -> str | None:
+    """从消息中识别人群目标（减脂/增肌/调理）；未命中返回 None，不覆盖既有画像。"""
+    text = message or ""
+    for goal, keywords in _GOAL_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return goal
+    return None
+
 
 def _token_overlap(content: str, query_tokens: set[str]) -> int:
     """回复块优选：统计块中命中的查询词数（同义重叠优先）。"""
@@ -216,6 +233,20 @@ def _session_allergies(user_id: str, session_id: str | None) -> list[str]:
         db.close()
 
 
+def _session_goal_tag(session_id: str | None) -> str | None:
+    """从 DB 读取会话当前人群标签；未设置/异常返回 None。"""
+    if not session_id:
+        return None
+    db = SessionLocal()
+    try:
+        sess = db.get(models.Session, session_id)
+        return sess.goal_tag if sess else None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        db.close()
+
+
 def _recent_user_messages(session_id: str | None, n: int = 2) -> list[str]:
     """取最近 n 条用户消息（旧→新），用于多轮上下文检索增强。"""
     if not session_id:
@@ -246,6 +277,44 @@ def _session_has_disease(session_id: str | None) -> bool:
         return any(is_disease_query(m.content) for m in msgs)
     except Exception:  # noqa: BLE001
         return False
+    finally:
+        db.close()
+
+
+def _update_session_profile(
+    user_id: str,
+    session_id: str | None,
+    *,
+    allergy_ids: list[str] | None = None,
+    goal_tag: str | None = None,
+) -> None:
+    """P2：把对话中新识别的过敏/目标写回会话画像（非致命，异常不影响主流程）。
+
+    会话不存在时按需创建（与 _persist_turn 同一套兜底），保证「中途声明」的
+    过敏在下一轮仍生效——即「记得我」。写库放在 _persist_turn 之前。
+    """
+    if not session_id:
+        return
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, user_id)
+        if user is None:
+            user = models.User(id=user_id, nickname=None)
+            db.add(user)
+            db.flush()
+        sess = db.get(models.Session, session_id)
+        if sess is None:
+            sess = models.Session(id=session_id, user_id=user_id, goal_tag=None, allergies=[])
+            db.add(sess)
+            db.flush()
+        if allergy_ids is not None:
+            sess.allergies = allergy_ids
+        if goal_tag is not None:
+            sess.goal_tag = goal_tag
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("会话画像持久化失败（非致命，已跳过）")
     finally:
         db.close()
 
@@ -284,7 +353,7 @@ def _persist_turn(
 
 @app.post("/api/chat", response_model=UnifiedResponse)
 def chat(req: ChatRequest) -> UnifiedResponse:
-    """多轮对话：检索 grounding 回答 + 合规层（免责/拒药/禁忌）+ 对话落库。"""
+    """多轮对话：检索 grounding 回答 + 合规层（免责/拒药/禁忌）+ 过敏/目标画像持久化 + 对话落库。"""
     message = validate_message(req.message)
     # 多轮上下文：最近用户消息参与检索；疾病意图跨轮延续免责
     recent = _recent_user_messages(req.session_id, 2)
@@ -334,9 +403,11 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         sources = []
 
     # 禁忌识别：请求声明 + 对话触发 + 会话已声明，三路合并
-    allergy_ids = set(req.allergies) | set(detect_allergies(message)) | set(
-        _session_allergies(req.user_id, req.session_id)
-    )
+    session_allergy_ids = set(_session_allergies(req.user_id, req.session_id))
+    detected_allergies = set(detect_allergies(message))
+    # P2：本轮「新检测到」的过敏（尚未写回会话）——只在首次声明时非空 → 只追问一次
+    new_allergies = detected_allergies - session_allergy_ids
+    allergy_ids = set(req.allergies) | detected_allergies | session_allergy_ids
     excluded = excluded_foods(list(allergy_ids))
 
     disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
@@ -405,9 +476,29 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 else:
                     reply = f"【{top.chapter} · {top.section}】\n{snippet}"
 
+    # P2 画像持久化：过敏全集写回 session + 隐含人群目标动态更新
+    # （写库放在 _persist_turn 之前；异常不影响主流程）
+    if new_allergies:
+        _update_session_profile(req.user_id, req.session_id, allergy_ids=list(allergy_ids))
+    detected_goal = _detect_goal(message)
+    if detected_goal and detected_goal != _session_goal_tag(req.session_id):
+        _update_session_profile(req.user_id, req.session_id, goal_tag=detected_goal)
+
+    # P2 过敏追问：仅首次声明时，以追问开头确认「已记录」；未配置话术的 id 跳过
+    if new_allergies:
+        follow_up_parts = [
+            ALLERGY_FOLLOWUP[aid]
+            for aid in sorted(new_allergies)
+            if aid in ALLERGY_FOLLOWUP
+        ]
+        if follow_up_parts:
+            follow_up = "\n\n".join(follow_up_parts)
+            reply = f"{follow_up}\n\n{reply}" if reply else follow_up
+
     if excluded:
         # 红线②「禁忌必排除」：先把正文中出现的禁忌食材剔除（长名优先，避免
         # 短名替换破坏长名），再追加排除提示语（提示语仍列全清单供用户知晓）。
+        # 确认排除提示始终保留在 reply 尾部（追问之后）。
         for f in sorted(excluded, key=len, reverse=True):
             reply = reply.replace(f, "（已按禁忌剔除）")
         reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
