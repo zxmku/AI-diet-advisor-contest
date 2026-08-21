@@ -340,11 +340,33 @@ def chat(req: ChatRequest) -> UnifiedResponse:
 
     if not numeric_hit and not numeric_miss:
         if not chunks:
-            reply = (
-                "抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。"
-                "您可以换个说法，或告诉我您更关注减脂 / 增肌 / 慢病调理中的哪一类？"
-            )
-            intent = "chitchat"
+            # 无检索命中：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应（打招呼/闲聊），
+            # 失败再降级原话术——保证「你好」这类友好交互像真 AI，而非甩规则话术。
+            if is_medication_query(message):
+                reply = (
+                    "本工具不提供用药建议，请遵医嘱。如有膳食搭配、营养方面的疑问，"
+                    "我很乐意为您解答。"
+                )
+                intent = "medication_refuse"
+            else:
+                llm_reply = None
+                if llm.is_enabled():
+                    llm_reply = llm.synthesize(
+                        message,
+                        [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
+                        history=_recent_user_messages(req.session_id, 3),
+                    )
+                if llm_reply:
+                    reply = llm_reply
+                    model_tag = config.DEEPSEEK_MODEL
+                    degraded = False
+                    intent = "chitchat"
+                else:
+                    reply = (
+                        "抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。"
+                        "您可以换个说法，或告诉我您更关注减脂 / 增肌 / 慢病调理中的哪一类？"
+                    )
+                    intent = "chitchat"
         else:
             top = _pick_reply_chunk(chunks, message)
             intent = "platform" if top.source == "C" else "nutrition_qa"

@@ -25,7 +25,9 @@ _SYSTEM_PROMPT = (
     "1. 只引用资料中的事实，不得编造营养数值或医疗结论；资料未覆盖时，明确说「资料未提及」，不要猜测。\n"
     "2. 不提供任何用药建议，不诊断疾病；涉及疾病或用药请引导用户咨询医生。\n"
     "3. 若用户有已声明的食物禁忌，主动提醒避开相关食材。\n"
-    "4. 可就膳食搭配、分量、烹饪方式给出实用建议。"
+    "4. 可就膳食搭配、分量、烹饪方式给出实用建议。\n"
+    "5. 若用户只是打招呼、闲聊或询问你的身份，自然友好回应即可，无需引用资料；"
+    "遇到明显超出膳食/营养/健康范畴的请求，礼貌说明你的服务范围并引导回减脂/增肌/调理。"
 )
 
 
@@ -36,6 +38,8 @@ def is_enabled() -> bool:
 
 def _grounding_text(chunks: Sequence[SourceChunk], limit: int = 3) -> str:
     """把检索块拼成可读的 grounding 上下文（带来源标注）。"""
+    if not chunks:
+        return "（当前问题暂无直接相关的参考资料）"
     parts: list[str] = []
     for i, c in enumerate(chunks[:limit], 1):
         head = f"【资料{i}】（来源{c.source} · {c.chapter} · {c.section}）"
@@ -91,11 +95,11 @@ def synthesize(
 
     返回模型文本；任何失败返回 None（上层降级 local-rules）。
     history 为最近用户消息（旧→新），用于轻量多轮上下文。
+
+    允许传入空 chunks：用于打招呼 / 闲聊 / 身份问询等场景，靠系统提示第 5 条
+    约束模型行为——仍以「资料未提及则不臆测」为铁律，绝不裸奔。
     """
     if not is_enabled():
-        return None
-    if not chunks:
-        # 无 grounding 时不臆测，交给 local-rules 处理。
         return None
 
     grounding = _grounding_text(chunks)
