@@ -140,6 +140,33 @@ def test_decision_allergy_filter():
     assert "牛奶" not in items, f"点单建议不应含禁忌食材: {items}"
 
 
+def test_decision_not_hijack_numeric_and_chat(monkeypatch):
+    """QA MEDIUM/LOW 回归：数值问答不被决策劫持；闲聊/抱怨不误触发决策。"""
+    from app.main import app
+
+    with TestClient(app) as c:
+        r1 = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "麦当劳麦香鸡多少千卡"},
+        )
+        r2 = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "我点的外卖还没到"},
+        )
+        r3 = c.post(
+            "/api/chat",
+            json={"user_id": "u", "session_id": "s", "message": "在麦当劳聊聊减脂"},
+        )
+    assert r1.status_code == 200
+    d1 = r1.json()["data"]
+    # 核心回归：带场景名的数值问必须走数值路径（hit 或诚实 miss），绝不能被决策劫持
+    assert d1["intent"].startswith("nutrition_lookup"), f"数值问答不应被决策劫持: {d1['intent']}"
+    assert r2.status_code == 200
+    assert r2.json()["data"].get("intent") != "decision", "抱怨配送不应触发决策"
+    assert r3.status_code == 200
+    assert r3.json()["data"].get("intent") != "decision", "闲聊不应触发决策"
+
+
 # ── 3. 采购清单（P3 一餐派生）────────────────────────────────────
 def test_meal_shopping_list(monkeypatch):
     from app.main import app

@@ -982,7 +982,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             intent = "meal"
             model_tag = "local-rules"
             sources = _meal_response_sources(meal)
-    elif _decision_cand:
+    elif _decision_cand and not (is_num_query and num_food):
         # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）──
         # 候选已在分支前解析并按禁忌过滤；纯行为决策、不引用素材外精确数值（红线⑤）。
         reply = (

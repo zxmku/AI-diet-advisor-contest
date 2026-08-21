@@ -68,6 +68,10 @@ def resolve(message: str, goal: str = "减脂") -> dict | None:
     返回：{scenario, goal, items, note}（结构化；items 供前端展示与禁忌过滤）。
     """
     text = (message or "").lower()
+    # 误触发排除（QA LOW）：闲聊/抱怨配送/纯数值问（"多少钱"）不当作点单场景
+    for _excl in ("聊聊", "还没到", "配送", "多少钱", "吐槽", "怎么还不"):
+        if _excl in text:
+            return None
     for name, spec in SCENARIOS.items():
         if any(lbl in text for lbl in spec["labels"]):
             plan = spec.get(goal) or spec.get("减脂") or []
