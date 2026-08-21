@@ -250,3 +250,63 @@ def test_p3_meal_goal_ask_when_no_goal(client):
     reply = body["data"]["reply"]
     assert "减脂" in reply and "增肌" in reply and "控糖" in reply
     assert "meal" not in body["data"]
+
+
+# ═══ P5a 饮食管理（记住饮食）═══
+
+
+def _diet_logs(user_id: str) -> list[models.DietLog]:
+    """直接查 temp DB 中的饮食台账（断言持久化结果，最新在前）。"""
+    db = SessionLocal()
+    try:
+        return (
+            db.query(models.DietLog)
+            .filter(models.DietLog.user_id == user_id)
+            .order_by(models.DietLog.created_at.desc(), models.DietLog.id.desc())
+            .all()
+        )
+    finally:
+        db.close()
+
+
+def test_p5_diet_record_then_query(client):
+    """P5a：记录「早餐吃了两个鸡蛋和一杯牛奶」→ DietLog 落库 + 回复确认（含速查表热量估算）；
+    再问「我最近吃了什么」→ 汇总含该条（记住饮食闭环）。"""
+    r1 = _chat(
+        client,
+        "帮我记一下：早餐吃了两个鸡蛋和一杯牛奶",
+        session_id="p5a",
+        user_id="u_p5a",
+    )
+    assert r1.status_code == 200
+    reply1 = r1.json()["data"]["reply"]
+    assert "记下" in reply1 and "早餐" in reply1, f"记录确认缺失: {reply1[:80]}"
+    # 鸡蛋/牛奶均在速查表（155/65 千卡每 100g）→ 回复给出「约 X 千卡」合计
+    assert "千卡" in reply1 and "约" in reply1, f"热量估算缺失: {reply1[:120]}"
+
+    # 台账已落库：meal_tag=早餐，content 为消息原文
+    logs = _diet_logs("u_p5a")
+    assert len(logs) == 1, f"DietLog 未落库: {len(logs)}"
+    assert logs[0].meal_tag == "早餐"
+    assert "鸡蛋" in logs[0].content and "牛奶" in logs[0].content
+
+    # 查询闭环：最近吃了什么 → 汇总含该条
+    r2 = _chat(client, "我最近吃了什么", session_id="p5a", user_id="u_p5a")
+    assert r2.status_code == 200
+    reply2 = r2.json()["data"]["reply"]
+    assert "你最近记了" in reply2, f"查询汇总缺失: {reply2[:80]}"
+    assert "早餐" in reply2 and "鸡蛋" in reply2 and "牛奶" in reply2
+
+
+def test_p5_companion_empathy(client):
+    """P5b：一个人吃饭好孤独 → 回复非空、先共情/给轻建议、不 500。"""
+    r = _chat(client, "一个人吃饭好孤独", session_id="p5b", user_id="u_p5b")
+    assert r.status_code == 200
+    reply = r.json()["data"]["reply"]
+    assert reply, "陪伴回复为空"
+    assert (
+        ("我陪你" in reply)
+        or ("好好吃" in reply)
+        or ("简单快手" in reply)
+        or ("一个人" in reply)
+    ), f"回复缺共情或轻建议: {reply[:100]}"

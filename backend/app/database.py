@@ -2,7 +2,7 @@
 
 - 本地默认 SQLite，公网可通过 DATABASE_URL 切 Postgres（SQLAlchemy 抽象，切换无缝）；
 - SQLite 启用 ``PRAGMA journal_mode=WAL`` + ``busy_timeout``，防评审并发写锁致 500；
-- 四表结构见 models.py（users / sessions / messages / plans_cache）。
+- 五表结构见 models.py（users / sessions / messages / plans_cache / diet_logs）。
 """
 from __future__ import annotations
 

@@ -7,11 +7,15 @@
 - 推荐/快捷基于素材 B 真实方案生成理由（无「接口联调中」占位）；
 - P3 一餐生成：命中一餐意图（晚餐/今晚/给我做…）时由 _build_meal 确定性出餐——
   数值（热量/蛋白/碳水/克数）仅来自营养速查表真实值 × 份量，绝不编造，天然剔除禁忌；
+- P5 饮食管理 + 情感陪伴：命中记录/查询/陪伴意图时互斥优先返回——记录（我吃了…）落
+  DietLog 台账并按速查表估算热量，查询（最近吃了什么）汇总最近 5 条，陪伴（一个人吃饭/
+  好累/没胃口）先共情再轻建议，LLM 失败降级本地模板；
 - 未配置 DeepSeek Key 时以上述规则兜底，配置后可由 app/llm.py 升级为 LLM 合成（M13）。
 """
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
@@ -461,6 +465,249 @@ def _token_overlap(content: str, query_tokens: set[str]) -> int:
     return sum(1 for t in query_tokens if t in content)
 
 
+# ── P5a 饮食管理（记住饮食）：记录/查询意图触发词 ──
+# 记录触发词只取「已吃/记录动作」语义（吃了/记一下/帮我记…），不把裸餐次词（早餐/晚餐）
+# 当记录——否则「晚餐给我做减脂的」这类 P3 一餐请求会被误记成台账。餐次仅用于 meal_tag 判定。
+_DIET_RECORD_TRIGGERS: tuple[str, ...] = (
+    "我吃了", "今天吃了", "吃了", "记录一下", "记一下", "帮我记", "帮我记录", "记一笔", "加餐",
+)
+# 查询触发词：问「吃了什么/饮食记录」等。必须优先于记录判定（「我最近吃了什么」含「吃了」）。
+_DIET_QUERY_TRIGGERS: tuple[str, ...] = (
+    "吃了什么", "吃了啥", "饮食记录", "最近吃什么", "我吃了什么", "我吃了啥",
+    "记了什么", "台账",
+)
+# 问句/求方案语义：命中则不当作记录（如「帮我记一下今天吃什么」是求建议，不是记台账）。
+_MEAL_REQUEST_HINTS: tuple[str, ...] = (
+    "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么吃", "安排",
+)
+
+# ── P5b 情感陪伴（一人食陪聊）：触发词 ──
+_COMPANION_TRIGGERS: tuple[str, ...] = (
+    "一个人吃饭", "一个人吃", "没人陪", "好累", "没胃口", "心情不好", "不开心",
+    "加班", "孤独", "孤单", "不想动", "一个人住",
+)
+
+
+def _is_diet_query(message: str) -> bool:
+    """是否命中「查询饮食台账」意图。"""
+    return any(t in (message or "") for t in _DIET_QUERY_TRIGGERS)
+
+
+def _is_diet_record(message: str) -> bool:
+    """是否命中「记录饮食台账」意图（互斥：查询/问句语义一律不算记录）。"""
+    text = message or ""
+    if _is_diet_query(text):
+        return False
+    if any(h in text for h in _MEAL_REQUEST_HINTS):
+        return False
+    return any(t in text for t in _DIET_RECORD_TRIGGERS)
+
+
+def _is_companion(message: str) -> bool:
+    """是否命中「一人食陪聊/情感陪伴」意图。"""
+    return any(t in (message or "") for t in _COMPANION_TRIGGERS)
+
+
+def _diet_meal_tag_from_message(message: str) -> str:
+    """从消息提取餐次标签：含早/午/晚/加餐 → 早餐/午餐/晚餐/加餐；未命中默认正餐。"""
+    text = message or ""
+    if "加餐" in text:
+        return "加餐"
+    if "早" in text:
+        return "早餐"
+    if "午" in text:
+        return "午餐"
+    if "晚" in text:
+        return "晚餐"
+    return "正餐"
+
+
+def _grams_near(text: str, start: int, length: int) -> int:
+    """在食材名前后 8 个字符窗口内找「数字+克/g」份量；未找到返回 100（常见份量）。
+
+    红线「数值只来自速查表」：份量只取消息里显式写的克数，其余按 100g 常见份量估算，
+    不猜单位换算（「两个鸡蛋」仍按 100g 计，不虚构鸡蛋单重）。
+    """
+    window = text[max(0, start - 8): start + length + 8]
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:克|g|G)", window)
+    if m:
+        return int(float(m.group(1)))
+    return 100
+
+
+def _estimate_diet_kcal(message: str) -> tuple[float | None, list[dict]]:
+    """尽力估算消息中食材的热量（仅速查表真实值 × 份量；表外不编、不显示数字）。
+
+    对消息里的每个表内食材（长名优先，避免「鸡蛋（全蛋）」被短名抢占）逐个 lookup，
+    累加 kcal；返回 (total_kcal|None, items)。无任何表内食材时 total_kcal=None，
+    调用方不显示任何数字。
+    """
+    text = message or ""
+    matches: list[tuple[str, int, int]] = []
+    for key in sorted(nutrition_lookup.NUTRITION_TABLE, key=len, reverse=True):
+        idx = text.find(key)
+        while idx != -1:
+            matches.append((key, idx, _grams_near(text, idx, len(key))))
+            idx = text.find(key, idx + len(key))
+    if not matches:
+        return None, []
+    matches.sort(key=lambda m: m[1])
+    items: list[dict] = []
+    total = 0.0
+    for key, _idx, grams in matches:
+        row = nutrition_lookup.NUTRITION_TABLE[key]
+        kcal: float | None = None
+        if row.get("kcal") is not None:
+            kcal = round(float(row["kcal"]) * grams / 100, 1)
+            total += kcal
+        items.append({"food": row["display_name"], "grams": grams, "kcal": kcal})
+    return round(total, 1), items
+
+
+def _handle_diet_record(req: ChatRequest, message: str, excluded: list[str]) -> str:
+    """记录饮食台账：DietLog 入库（非致命）+ 尽力估算热量（仅速查表真实值）。
+
+    回复语气像真人营养师记台账：先友好确认，再给「约 X 千卡」估算；
+    表外食材不编造数字、不显示，仅当有表内食材才给出合计。
+    """
+    meal_tag = _diet_meal_tag_from_message(message)
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, req.user_id)
+        if user is None:
+            user = models.User(id=req.user_id, nickname=None)
+            db.add(user)
+            db.flush()
+        sess = db.get(models.Session, req.session_id) if req.session_id else None
+        if sess is None:
+            sess = models.Session(
+                id=req.session_id or uuid.uuid4().hex,
+                user_id=req.user_id,
+                goal_tag=None,
+                allergies=[],
+            )
+            db.add(sess)
+            db.flush()
+        db.add(
+            models.DietLog(
+                session_id=sess.id,
+                user_id=req.user_id,
+                meal_tag=meal_tag,
+                content=message,
+            )
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("饮食台账持久化失败（非致命，已跳过）")
+    finally:
+        db.close()
+
+    total_kcal, items = _estimate_diet_kcal(message)
+    head = f"好的，已帮你记下{meal_tag}台账📒：{message}。"
+    if total_kcal is None:
+        return (
+            head
+            + "\n这些食材暂时不在营养速查表里，先不估热量；以后你吃了什么都可以告诉我，我帮你记。"
+        )
+    parts = "、".join(
+        f"{it['food']}约 {int(round(it['kcal']))} 千卡"
+        if it["kcal"] is not None
+        else f"{it['food']}（速查表未收录，不计）"
+        for it in items
+    )
+    # 份量说明：消息带克数按用户份量估算；否则按常见份量 100g 估算。
+    portion_note = (
+        "按常见份量 100g 估算"
+        if all(it["grams"] == 100 for it in items)
+        else "按你提到的份量估算"
+    )
+    return (
+        head
+        + f"\n按速查表估算，这一餐约 {int(round(total_kcal))} 千卡"
+        f"（{parts}，{portion_note}）。"
+    )
+
+
+def _handle_diet_query(user_id: str, session_id: str | None) -> str:
+    """查询该用户最近 5 条饮食台账（created_at desc），自然汇总；无记录则引导记录。"""
+    db = SessionLocal()
+    try:
+        logs = (
+            db.query(models.DietLog)
+            .filter(models.DietLog.user_id == user_id)
+            .order_by(models.DietLog.created_at.desc(), models.DietLog.id.desc())
+            .limit(5)
+            .all()
+        )
+    except Exception:  # noqa: BLE001
+        logs = []
+        logger.exception("饮食台账查询失败（非致命，已降级为空）")
+    finally:
+        db.close()
+    if not logs:
+        return "你还没有饮食记录哦。告诉我你吃了什么（比如「早餐吃了两个鸡蛋」），我帮你记下来。"
+    lines = [f"· {log.meal_tag}：{log.content}" for log in logs]
+    return "你最近记了：\n" + "\n".join(lines)
+
+
+def _companion_local_reply(req: ChatRequest, excluded: list[str]) -> str:
+    """本地陪伴模板：先共情再轻建议；会话有目标时复用 P3 一餐生成器给轻量建议。
+
+    建议里的食材全部来自速查表（P3 生成器保证），不编造数值。
+    """
+    goal = _session_goal_tag(req.session_id)
+    meal = _build_meal(goal, excluded, "正餐") if goal else None
+    if meal is not None:
+        foods = "、".join(
+            it["food"]
+            for it in meal["items"]
+            if it["category"] in ("主蛋白", "主食碳水", "蔬菜")
+        )
+        return (
+            f"一个人吃饭更要好好吃🍚 我陪你。来点简单快手的？{foods} 一份就够，"
+            "慢点吃，别让胃空着；需要的话我把做法也给你。"
+        )
+    return (
+        "一个人吃饭更要好好吃🍚 我陪你。来点简单快手的？鸡胸肉+西兰花 15 分钟就能搞定，"
+        "慢点吃，别让胃空着。"
+    )
+
+
+def _handle_companion(
+    req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
+) -> str:
+    """情感陪伴：先共情再轻建议。LLM 启用时优先合成（系统提示第 6 条约束），失败降级本地模板。"""
+    if llm.is_enabled():
+        llm_reply = llm.synthesize(
+            message,
+            [],
+            history=list(recent),
+            session_id=req.session_id,
+            excluded_foods=excluded or None,
+        )
+        if llm_reply:
+            return llm_reply
+    return _companion_local_reply(req, excluded)
+
+
+def _try_p5_intent(
+    req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
+) -> tuple[str, str] | None:
+    """P5 互斥意图派发：饮食查询 → 饮食记录 → 情感陪伴。
+
+    命中返回 (reply, intent)，chat() 直接采用（不落入 P3/检索，互斥优先）；
+    未命中返回 None，保持既有流程。
+    """
+    if _is_diet_query(message):
+        return _handle_diet_query(req.user_id, req.session_id), "diet_query"
+    if _is_diet_record(message):
+        return _handle_diet_record(req, message, excluded), "diet_record"
+    if _is_companion(message):
+        return _handle_companion(req, message, excluded, recent), "companion"
+    return None
+
+
 # BUG-5：数值问答意图词 & 数值单位（命中则进入二次排序）
 _NUMERIC_HINTS = ("千卡", "卡路里", "卡", "kcal", "热量", "蛋白质", "脂肪", "碳水", "克", "g", "多少", "几")
 _VALUE_UNITS = ("千卡", "卡路里", "卡", "kcal", "g", "克", "蛋白质", "脂肪", "碳水", "热量")
@@ -674,10 +921,16 @@ def chat(req: ChatRequest) -> UnifiedResponse:
 
     disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
 
-    # ── P3 一餐意图：确定性一餐生成（红线：热量/蛋白/碳水只来自速查表 × 份量，
-    # 绝不编造；生成时已排除禁忌，天然合规）。未命中保持原有数值/检索行为。 ──
+    # ── P5 饮食管理（记住饮食）+ 情感陪伴（一人食陪聊）：互斥优先于 P3/检索 ──
+    # 命中记录/查询/陪伴意图即返回，不落入一餐生成/BM25 检索；问句/求方案语义
+    # （什么/推荐/给我做）不当作记录，避免「早餐吃什么好」被误记成台账。
     meal: dict | None = None
-    if _is_meal_intent(message):
+    p5 = _try_p5_intent(req, message, excluded, recent)
+    if p5 is not None:
+        reply, intent = p5
+        model_tag = "local-rules"
+        sources = []
+    elif _is_meal_intent(message):
         goal = _meal_goal(message, _session_goal_tag(req.session_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）

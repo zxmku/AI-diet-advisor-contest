@@ -1,7 +1,8 @@
-"""ORM 模型：users / sessions / messages / plans_cache 四表（全局数据契约 2.3）。
+"""ORM 模型：users / sessions / messages / plans_cache / diet_logs 五表（全局数据契约 2.3）。
 
 - sessions.allergies 存禁忌 id 的 JSON 数组，每次请求必须加载进合规拦截，不因轮次丢失；
-- messages.sources 存引用溯源 JSON 数组，与统一响应格式的 sources 结构一致。
+- messages.sources 存引用溯源 JSON 数组，与统一响应格式的 sources 结构一致；
+- diet_logs（P5）存用户饮食台账（记住吃了什么），meal_tag ∈ 早餐/午餐/晚餐/加餐/正餐。
 """
 from __future__ import annotations
 
@@ -79,3 +80,24 @@ class PlansCache(Base):
     )
     plan_type: Mapped[str] = mapped_column(String(32))
     recommended_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class DietLog(Base):
+    """P5 饮食台账：记住用户每餐吃了什么（「记得你吃了什么」核心）。
+
+    - meal_tag ∈ {早餐, 午餐, 晚餐, 加餐, 正餐}（按消息含早/午/晚/加餐判定，默认正餐）；
+    - content 存消息原文（不加工），热量估算仅展示用、不落库——避免把估算值当台账事实。
+    """
+
+    __tablename__ = "diet_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id"), index=True
+    )
+    meal_tag: Mapped[str] = mapped_column(String(16), default="正餐")
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
