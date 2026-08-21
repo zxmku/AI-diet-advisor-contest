@@ -1,4 +1,4 @@
-# 评委口 8137 启动器（双击即用；密钥经 run_hp.py 注入进程内存，明文不常驻）
+﻿# 评委口 8137 启动器（双击即用；密钥经 run_hp.py 注入进程内存，明文不常驻）
 $ErrorActionPreference = 'Stop'
 $VaultDir = "C:\Users\24771\Desktop\第二届月度实战能力大赛·8月专场\10_项目源码_healthpick\backend\scripts\vault"
 $backendDir = "C:\Users\24771\Desktop\第二届月度实战能力大赛·8月专场\10_项目源码_healthpick\backend"
