@@ -101,8 +101,10 @@ def synthesize(
 
     M17 成本闸门（在发起真实 API 调用之前）：
     - 当日预算超限（LLM_DAILY_BUDGET_TOKENS）→ 直接返回 None 自动降级；
-    - 同消息 TTL 内命中回复缓存（LLM_CACHE_TTL_SECONDS）→ 直接返回缓存，零花费；
-    - 调用成功后记账（usage 缺失则按消息体/回复长度估算）并写入缓存。
+    - 回复缓存仅覆盖**无上下文的单轮请求**（history 为空）：同消息 TTL 内命中
+      直接返回缓存，零花费；带 history 的多轮请求完全跳过缓存读/写（直通 API），
+      杜绝跨会话上下文串扰（DEFECT-1 修复）；
+    - 调用成功后记账（usage 缺失则按消息体/回复长度估算）；仅无上下文的单轮请求写缓存。
 
     允许传入空 chunks：用于打招呼 / 闲聊 / 身份问询等场景，靠系统提示第 5 条
     约束模型行为——仍以「资料未提及则不臆测」为铁律，绝不裸奔。
@@ -115,11 +117,16 @@ def synthesize(
         logger.info("LLM 当日预算已用尽（tokens >= %s），降级 local-rules", cost_gate.budget_tokens)
         return None
 
-    # M17 回复缓存：同消息 TTL 内命中直接返回，零 API 花费。
-    cache_key = user_message.strip()
-    cached = cost_gate.cache_get(cache_key)
-    if cached is not None:
-        return cached
+    # M17 回复缓存：仅覆盖无上下文的单轮请求（history 为空）。
+    # 缓存键只含 user_message，无法区分多轮上下文；history 非空时若复用缓存，
+    # 会把其他会话的上下文带进回复（DEFECT-1 跨会话串扰）。因此 history 非空时
+    # 完全跳过缓存读与缓存写（读直通 API，成功后也不写缓存）。
+    use_cache = not history
+    cache_key = user_message.strip() if use_cache else None
+    if use_cache:
+        cached = cost_gate.cache_get(cache_key)
+        if cached is not None:
+            return cached
 
     # M17 会话限速：单会话 60 秒窗口内调用次数达到限额即降级（缓存命中不占额度）。
     if not cost_gate.check_rate(session_id):
@@ -168,5 +175,7 @@ def synthesize(
             prompt_tokens = int(len(messages_json) * 1.3)
             completion_tokens = len(content)
         cost_gate.record(session_id, prompt_tokens, completion_tokens)
-        cost_gate.cache_set(cache_key, content)
+        # 仅无上下文的单轮请求写缓存；带 history 的多轮请求不落缓存（防串扰）。
+        if use_cache:
+            cost_gate.cache_set(cache_key, content)
     return content or None
