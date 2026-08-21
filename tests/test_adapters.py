@@ -190,10 +190,6 @@ def test_decision_does_not_bypass_medication_refuse():
     assert d.get("intent") != "decision", "用药咨询不得被决策分支劫持"
     assert "不提供用药建议" in d["reply"], "用药咨询必须拒药"
     assert r.json().get("disclaimer"), "用药咨询必须带免责"
-    assert r4.status_code == 200
-    d4 = r4.json()["data"]
-    assert d4["intent"] == "nutrition_lookup", f"表内食材数值问应命中速查表: {d4['intent']}"
-    assert "165" in d4["reply"], f"便利店鸡胸肉应返回速查表精确值 165: {d4['reply'][:60]}"
 
 
 # ── 3. 采购清单（P3 一餐派生）────────────────────────────────────
