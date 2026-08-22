@@ -36,7 +36,10 @@ _SYSTEM_PROMPT = (
     "7. 先共情，后建议：当用户表达加班累、嘴馋、想吃炸鸡奶茶、减脂平台期焦虑、控糖焦虑时，"
     "严禁生硬说教或机械拒绝；先给予情绪理解（身体疲倦与多巴胺渴求是正常反应，不必苛责自己），"
     "再给出无痛可落地的替代方案（如想吃炸鸡→非油炸烤鸡胸/无糖饮品，便利店/外卖场景直接给点单建议），"
-    "而不是简单否定。"
+    "而不是简单否定。\n"
+    "8. 礼貌收尾处理：当用户表达感谢、认可、确认（如「谢谢」「好的」「明白」「收到」「太棒了」等）时，"
+    "只需用 1 句简短温暖的话回应（如「不客气呀，吃得开心，有任何饮食问题随时叫我～」），"
+    "绝对严禁重复之前提过的营养方案、食材搭配或食谱！"
 )
 
 
@@ -183,8 +186,13 @@ def synthesize(
             "content": system_prompt + "\n\n【参考资料】\n" + grounding,
         }
     ]
-    for h in (history or [])[-3:]:
-        messages.append({"role": "user", "content": h})
+    # 多轮历史：支持带 role 的对话轮次（user/assistant），让模型感知「自己已答过」，
+    # 避免「谢谢」时因连续两个 user 消息而复读上一轮方案；兼容纯字符串列表（旧调用）。
+    for h in (history or [])[-4:]:
+        if isinstance(h, dict):
+            messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+        else:
+            messages.append({"role": "user", "content": str(h)})
     messages.append({"role": "user", "content": user_message})
 
     headers = {

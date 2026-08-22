@@ -1,15 +1,27 @@
 """时间感知适配器（管道适配器模式 · 热插拔）：按当前时刻注入时段问候与建议焦点。
 
 供 LLM 系统提示与前端欢迎语使用；零依赖、无状态，纯函数。
+
+时区约定：统一采用 UTC+8（北京时间）计算「当前时刻」——Docker 容器 / Linux
+服务器默认 UTC 时区，若直接用 datetime.now() 会差 8 小时（北京 21:03 = UTC
+13:03，误判「午餐时段」）。health_state.py 已有 _UTC8 先例，此处对齐。
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+_UTC8 = timezone(timedelta(hours=8))
 
 
 def get_meal_time_context(now: datetime | None = None) -> dict:
     """返回当前时段上下文：period（时段名）+ greeting（问候语）+ focus（建议焦点）。"""
-    hour = (now or datetime.now()).hour
+    if now is None:
+        hour = datetime.now(_UTC8).hour
+    else:
+        # 统一转成 UTC+8 再取 hour：naive 视为 +8 本地时间；带时区（如 UTC）则 astimezone 换算
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=_UTC8)
+        hour = now.astimezone(_UTC8).hour
     if 6 <= hour < 10:
         return {
             "period": "早餐时段",

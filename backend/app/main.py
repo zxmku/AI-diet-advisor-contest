@@ -789,7 +789,7 @@ def _handle_companion(
         llm_reply = llm.synthesize(
             message,
             [],
-            history=list(recent),
+            history=_recent_chat_turns(req.session_id, 4),
             session_id=req.session_id,
             user_id=req.user_id,
             excluded_foods=excluded or None,
@@ -931,6 +931,31 @@ def _recent_user_messages(session_id: str | None, n: int = 2) -> list[str]:
             .all()
         )
         return [m.content for m in reversed(msgs)]
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        db.close()
+
+
+def _recent_chat_turns(session_id: str | None, n: int = 4) -> list[dict]:
+    """取最近 n 条对话消息（含 user 与 assistant，旧→新），供 LLM 真实感知多轮上下文。
+
+    外部审查发现：此前只传 user 消息给 LLM，用户「谢谢」时模型看到两个连续 user
+    消息（以为还没回答过），导致复读上一轮方案。带上 assistant 回复后模型知道
+    自己已答过，礼貌收尾即可。仅用于 LLM 对话历史；检索增强仍用 _recent_user_messages。
+    """
+    if not session_id:
+        return []
+    db = SessionLocal()
+    try:
+        msgs = (
+            db.query(models.Message)
+            .filter(models.Message.session_id == session_id)
+            .order_by(models.Message.id.desc())
+            .limit(n)
+            .all()
+        )
+        return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
     except Exception:  # noqa: BLE001
         return []
     finally:
@@ -1278,7 +1303,10 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             is_platform = bool(top and top.source == "C")
             in_domain = is_platform or is_dietary_domain(message)
             if not chunks or not in_domain:
-                # 无检索命中 / 非膳食领域：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应
+                # 无检索命中 / 非膳食领域：闲聊/客套绝不外挂来源分块（外部审查发现：
+                # 此前 sources 带着上一轮 chunks 的 4 个分块，闲聊底下误挂来源标签）。
+                sources = []
+                # 用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应
                 # （打招呼/闲聊/情感陪伴），失败再降级原话术。
                 if is_medication_query(message):
                     reply = (
@@ -1292,7 +1320,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         llm_reply = llm.synthesize(
                             message,
                             [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
-                            history=_recent_user_messages(req.session_id, 3),
+                            history=_recent_chat_turns(req.session_id, 4),
                             session_id=req.session_id,
                             user_id=req.user_id,
                             excluded_foods=excluded or None,
@@ -1320,7 +1348,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     llm_reply = llm.synthesize(
                         message,
                         chunks,
-                        history=_recent_user_messages(req.session_id, 3),
+                        history=_recent_chat_turns(req.session_id, 4),
                         session_id=req.session_id,
                         user_id=req.user_id,
                         excluded_foods=excluded or None,
