@@ -85,6 +85,13 @@
   .icon-btn{width:38px;height:38px;border-radius:12px;border:1px solid var(--line);background:var(--card);font-size:16px;
     cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
   .icon-btn:hover{border-color:var(--brand);background:var(--brand-soft)}
+  /* 语音朗读开关：指示灯（绿=健康 / 黑=不健康），关=整体暗淡 */
+  /* 语音开关（DeepSeek 模型旁）：白喇叭+黑线；状态点 绿=通/黑=不通；关=斜线静音 */
+  .tts-badge{width:38px;height:38px;border-radius:12px;border:1.5px solid var(--line);background:var(--card);cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;transition:.15s}
+  .tts-badge:hover{border-color:var(--brand)}
+  .tts-badge.off{opacity:.5;filter:grayscale(.8)}
+  .tts-dot{position:absolute;top:2px;right:2px;width:7px;height:7px;border-radius:50%;background:#000;border:1px solid rgba(0,0,0,.2)}
+  .tts-dot.healthy{background:#22c55e;box-shadow:0 0 5px #22c55e;border-color:transparent}
 
   /* ═══ 问候卡（时间感知 · 可展开） ═══ */
   .greet{flex-shrink:0;margin:0 22px 4px;background:linear-gradient(135deg,var(--brand-deep),var(--brand) 62%,#4C7E6C);
@@ -232,22 +239,7 @@
   .ctx-quick button:hover{border-color:var(--brand);color:var(--brand-deep);background:var(--brand-soft)}
   .ctx-foot{margin-top:auto;font-size:10px;color:var(--ink-3);line-height:1.7;padding:4px;text-align:center}
 
-  /* ═══ 抽屉 / 遮罩 / toast（保留移动端交互） ═══ */
-  #sheetMask,#histMask,#profMask{position:fixed;inset:0;background:rgba(24,34,30,.45);opacity:0;pointer-events:none;transition:.3s;z-index:40}
-  #sheetMask.show,#histMask.show,#profMask.show{opacity:1;pointer-events:auto}
-  #sheet{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-radius:24px 24px 0 0;
-    padding:10px 18px calc(20px + var(--safe-bottom));transform:translateY(100%);transition:.32s cubic-bezier(.32,.72,.28,1);z-index:41}
-  #sheet.show{transform:none}
-  .sheet-handle{width:38px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 14px}
-  #sheet h3{font-size:15px;margin-bottom:12px}
-  .sheet-row{display:flex;gap:12px;align-items:center;padding:13px 4px;border-bottom:1px solid var(--line)}
-  .sheet-row .em{font-size:22px;flex-shrink:0}
-  .sheet-row b{font-size:14px;display:block}
-  .sheet-row p{font-size:12px;color:var(--ink-2)}
-  #histPanel,#profPanel{position:fixed;top:0;right:0;bottom:0;width:min(88%,360px);background:var(--card);
-    box-shadow:var(--shadow-lg);transform:translateX(100%);transition:.32s cubic-bezier(.32,.72,.28,1);
-    z-index:43;display:flex;flex-direction:column}
-  #histPanel.show,#profPanel.show{transform:none}
+  /* ═══ toast ═══ */
   .hist-head{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
     padding:calc(14px + var(--safe-top)) 16px 12px;border-bottom:1px solid var(--line)}
   .hist-head b{font-size:15px;color:var(--ink)}
@@ -266,25 +258,6 @@
   .hist-loading{text-align:center;color:var(--ink-3);font-size:13px;padding:64px 24px}
   .hist-loading i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--brand);margin:0 3px;animation:bounce 1.2s infinite}
   .hist-loading i:nth-child(2){animation-delay:.15s}.hist-loading i:nth-child(3){animation-delay:.3s}
-  .prof-sec{font-size:12px;font-weight:700;color:var(--brand-deep);margin:14px 2px 8px;display:flex;align-items:center;gap:6px}
-  .prof-card{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:11px 12px;margin-bottom:10px}
-  .prof-row{display:flex;align-items:flex-start;gap:9px;font-size:13px;padding:8px 0;border-bottom:1px dashed var(--line)}
-  .prof-row:last-child{border-bottom:none}
-  .prof-row .em{font-size:16px;flex-shrink:0;line-height:1.4}
-  .prof-row b{color:var(--ink);font-size:13px}
-  .prof-row p{font-size:11.5px;color:var(--ink-2);margin-top:1px;line-height:1.55;word-break:break-word}
-  .prof-chip{display:inline-block;font-size:11px;background:var(--card);color:var(--brand-deep);border:1px solid #CFDFD4;border-radius:999px;padding:3px 9px;margin:3px 4px 0 0;white-space:nowrap}
-  .prof-btn{flex:1;font-family:inherit;font-size:13px;padding:10px 8px;border-radius:12px;border:1px solid var(--line);
-    background:var(--card);color:var(--brand-deep);cursor:pointer;transition:.2s;min-height:42px}
-  .prof-btn:hover{background:var(--brand-soft);border-color:var(--brand)}
-  .prof-btn.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
-  .prof-btn.primary:hover{background:var(--brand-deep)}
-  .prof-empty{color:var(--ink-3);font-size:12px;padding:6px 2px;line-height:1.6}
-  .prof-tag-row{display:flex;align-items:center;gap:9px;padding:10px 4px;border-bottom:1px solid var(--line);font-size:13px;cursor:pointer}
-  .prof-tag-row:active{background:var(--brand-soft)}
-  .prof-tag-row input{width:16px;height:16px;accent-color:var(--brand);flex-shrink:0}
-  .prof-tag-row span{color:var(--ink);line-height:1.4}
-  .prof-btn-row{display:flex;gap:8px;margin-top:14px;padding-bottom:6px}
   #toast{position:fixed;left:50%;bottom:calc(96px + var(--safe-bottom));transform:translateX(-50%) translateY(16px);
     background:var(--ink);color:#fff;font-size:13px;padding:11px 18px;border-radius:12px;box-shadow:var(--shadow-lg);
     opacity:0;pointer-events:none;transition:.3s;z-index:99;white-space:nowrap}
@@ -320,9 +293,14 @@
       </div>
       <div class="top-right">
         <div class="badge" id="modelbadge"><i></i><span id="modelbadgeTxt">在线</span></div>
-        <button class="icon-btn" onclick="openProfile()" title="用户档案">👤</button>
-        <button class="icon-btn" onclick="openHistory()" title="历史会话" id="historyBtn">🕘</button>
-        <button class="icon-btn" onclick="openSheet()" title="我的健康目标">🎯</button>
+        <button class="tts-badge" id="ttsToggle" onclick="toggleTTS()" title="语音朗读：开">
+          <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 10v4h4l5 4.5V5.5L7 10H3z" fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M14.5 8.5a4 4 0 0 1 0 7" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>
+            <line id="ttsMuteLine" x1="5" y1="19" x2="19" y2="5" stroke="#000" stroke-width="2" stroke-linecap="round" style="display:none"/>
+          </svg>
+          <i class="tts-dot" id="ttsDot"></i>
+        </button>
       </div>
     </header>
 
@@ -422,41 +400,7 @@
   </aside>
 </div>
 
-<!-- 人群详情抽屉 -->
-<div id="sheetMask" onclick="closeSheet()"></div>
-<div id="sheet">
-  <div class="sheet-handle"></div>
-  <h3>🎯 切换健康目标</h3>
-  <div class="sheet-row" onclick="pickGoal('slim')"><span class="em">🔥</span><div><b>减脂塑形</b><p>科学控卡 · 211 餐盘 · 1200–1800 千卡/日</p></div></div>
-  <div class="sheet-row" onclick="pickGoal('muscle')"><span class="em">💪</span><div><b>增肌强化</b><p>蛋白优先 · 2500–3000 千卡 · 练后补充窗口</p></div></div>
-  <div class="sheet-row" onclick="pickGoal('care')"><span class="em">🫀</span><div><b>慢病调理</b><p>稳糖低GI · 控糖321餐盘 · 控盐控糖</p></div></div>
-</div>
-
 <div id="toast">⚠️ <span id="toastTxt"></span></div>
-
-<!-- 历史会话抽屉 -->
-<div id="histMask" onclick="closeHistory()"></div>
-<div id="histPanel">
-  <div class="hist-head">
-    <b>🕘 历史会话</b>
-    <button class="icon-btn" onclick="closeHistory()" title="关闭">✕</button>
-  </div>
-  <div class="hist-sub" id="histSub">过往对话记录保存在本机</div>
-  <div class="hist-list" id="histList"></div>
-</div>
-
-<!-- 用户档案抽屉 -->
-<div id="profMask" onclick="closeProfile()"></div>
-<div id="profPanel">
-  <div class="hist-head">
-    <b>💚 用户档案</b>
-    <button class="icon-btn" onclick="closeProfile()" title="关闭">✕</button>
-  </div>
-  <div class="hist-sub">这是小优记住的你 💚</div>
-  <div class="hist-list" id="profList">
-    <div class="hist-loading">加载中<i></i><i></i><i></i></div>
-  </div>
-</div>
 
 <script>
 /* ═══ 时间感知问候 ═══ */
@@ -475,11 +419,9 @@
 
 /* ═══ 纯 UI 函数 ═══ */
 function toggleGreet(){document.getElementById('greet').classList.toggle('open')}
-function openSheet(){document.getElementById('sheet').classList.add('show');document.getElementById('sheetMask').classList.add('show')}
-function closeSheet(){document.getElementById('sheet').classList.remove('show');document.getElementById('sheetMask').classList.remove('show')}
 
-/* 无障碍：div 模拟按钮（.greet/.sheet-row）补键盘可达 */
-document.querySelectorAll('.greet,.sheet-row').forEach(el=>{
+/* 无障碍：div 模拟按钮（.greet）补键盘可达 */
+document.querySelectorAll('.greet').forEach(el=>{
   el.setAttribute('role','button');
   el.setAttribute('tabindex','0');
   el.addEventListener('keydown', e=>{
@@ -495,13 +437,6 @@ function selectGoal(el,key){
   document.querySelectorAll('.gbtn').forEach(b=>b.classList.remove('active'));
   el.classList.add('active');
   toast('已切换健康目标');
-  loadRecommend(GOAL_MAP[key] || '减脂');
-}
-function pickGoal(key){
-  closeSheet();
-  document.querySelectorAll('.gbtn').forEach(b=>{
-    b.classList.toggle('active', !!b.getAttribute('onclick') && b.getAttribute('onclick').includes("'"+key+"'"));
-  });
   loadRecommend(GOAL_MAP[key] || '减脂');
 }
 
@@ -523,6 +458,53 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
 function addMsg(html, who){ const d=document.createElement('div'); d.className='msg '+who; d.innerHTML=html; msgsInner.appendChild(d); scroll(); return d; }
 function quickAsk(q){ input.value = q; send(); }
 
+/* ═══ 语音朗读开关（默认开，localStorage 持久化）：开=自动读每条回复，关=静音断线；指示灯绿=健康/黑=不健康 ═══ */
+let ttsEnabled = localStorage.getItem('hp_tts') !== '0';   // 默认开；关掉后刷新仍保持
+let ttsHealthy = false;  // 健康状态：页面加载时探测 /health.tts_available
+
+function speakText(text){
+  if(!text) return Promise.resolve();
+  return fetch('/api/tts', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text })
+  }).then(async r => {
+    if(!r.ok){ ttsHealthy=false; updateTTS(); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    a.onended = () => URL.revokeObjectURL(url);
+    a.play();
+  }).catch(()=>{ ttsHealthy=false; updateTTS(); });
+}
+
+function updateTTS(){
+  const dot = document.getElementById('ttsDot');
+  const btn = document.getElementById('ttsToggle');
+  const mute = document.getElementById('ttsMuteLine');
+  const st = ttsEnabled ? '开' : '关';
+  const hl = ttsHealthy ? '（正常）' : '（不可用）';
+  if(dot) dot.className = 'tts-dot' + (ttsHealthy ? ' healthy' : '');
+  if(btn){
+    btn.classList.toggle('off', !ttsEnabled);
+    btn.title = '语音朗读：' + st + hl;
+  }
+  if(mute) mute.style.display = ttsEnabled ? 'none' : 'block';  // 关=斜线（静音）
+}
+
+function toggleTTS(){
+  ttsEnabled = !ttsEnabled;
+  localStorage.setItem('hp_tts', ttsEnabled ? '1' : '0');
+  updateTTS();
+  toast(ttsEnabled ? '🔊 语音已开启，回复自动朗读' : '🔇 语音已关闭，回复静音');
+}
+
+function initTTS(){
+  fetch('/health').then(r=>r.json()).then(h=>{
+    ttsHealthy = !!h.tts_available;
+    updateTTS();
+  }).catch(()=>{ ttsHealthy=false; updateTTS(); });
+}
+
 /* ═══ 渲染：机器人消息（真实回答 + 来源 + 免责 + 模型标注 + TTS） ═══ */
 function renderBot(j){
   if(!j || !j.data) return;
@@ -532,29 +514,6 @@ function renderBot(j){
   txt.className = 'txt';
   txt.textContent = j.data.reply || '（暂无回答）';
   d.appendChild(txt);
-  /* 语音输出（TTS）：点击 🔊 朗读本条回答 */
-  const spk = document.createElement('button');
-  spk.className = 'spk';
-  spk.textContent = '🔊';
-  spk.title = '朗读这条回答';
-  spk.onclick = async () => {
-    spk.disabled = true;
-    try {
-      const r = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: j.data.reply || '' })
-      });
-      if (!r.ok) { toast('语音服务暂不可用'); return; }
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = new Audio(url);
-      a.onended = () => URL.revokeObjectURL(url);
-      a.play();
-    } catch (e) { toast('语音播放失败'); }
-    finally { spk.disabled = false; }
-  };
-  d.appendChild(spk);
   if(j.disclaimer){
     const disc = document.createElement('div');
     disc.className = 'msg-disc';
@@ -582,6 +541,10 @@ function renderBot(j){
   }
   if(j.data.decision){
     renderDecision(j.data.decision);
+  }
+  /* 语音自动朗读：开关开 + TTS 健康时，每条回复自动读 */
+  if(ttsEnabled && ttsHealthy){
+    speakText(j.data.reply || '');
   }
   scroll();
 }
@@ -894,61 +857,6 @@ function newSession(){
   toast('已开启新对话');
 }
 
-/* ═══ 历史会话面板 ═══ */
-function openHistory(){
-  closeSheet();
-  document.getElementById('histMask').classList.add('show');
-  document.getElementById('histPanel').classList.add('show');
-  loadHistory();
-}
-function closeHistory(){
-  document.getElementById('histMask').classList.remove('show');
-  document.getElementById('histPanel').classList.remove('show');
-}
-async function loadHistory(){
-  const list = document.getElementById('histList');
-  list.innerHTML = '<div class="hist-loading">加载中<i></i><i></i><i></i></div>';
-  try{
-    const r = await fetch('/api/history?user_id=' + encodeURIComponent(UID));
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    renderSessions((j && j.data && j.data.sessions) || []);
-  }catch(e){
-    list.innerHTML = '<div class="hist-empty"><b>📡</b>历史记录加载失败<br><span>请检查网络后重试</span></div>';
-    toast('历史记录加载失败');
-  }
-}
-function renderSessions(sessions){
-  const list = document.getElementById('histList');
-  list.innerHTML = '';
-  if(!sessions || !sessions.length){
-    list.innerHTML = '<div class="hist-empty"><b>📭</b>还没有历史会话<br><span>开始一段对话后，记录会自动保存在这里</span></div>';
-    return;
-  }
-  sessions.forEach(s => {
-    const it = document.createElement('div');
-    it.className = 'hist-item' + (s.session_id === SID ? ' current' : '');
-    const raw = (s.first_message || '').trim();
-    const snippet = raw ? (raw.length > 32 ? raw.slice(0, 32) + '…' : raw) : '（该会话暂无用户提问）';
-    const t = document.createElement('div');
-    t.className = 'hist-item-t';
-    const cnt = document.createElement('span');
-    cnt.textContent = '💬 ' + s.message_count + ' 条消息';
-    t.appendChild(cnt);
-    if(s.session_id === SID){
-      const tag = document.createElement('span');
-      tag.className = 'hist-tag';
-      tag.textContent = '当前';
-      t.appendChild(tag);
-    }
-    const sdiv = document.createElement('div');
-    sdiv.className = 'hist-item-s';
-    sdiv.textContent = snippet;
-    it.appendChild(t); it.appendChild(sdiv);
-    it.onclick = () => loadSession(s.session_id);
-    list.appendChild(it);
-  });
-}
 async function loadSession(sid){
   try{
     const r = await fetch('/api/history?user_id=' + encodeURIComponent(UID) + '&session_id=' + encodeURIComponent(sid));
@@ -958,7 +866,6 @@ async function loadSession(sid){
     renderHistoryMessages(messages);
     SID = sid;
     localStorage.setItem('hp_sid', SID);
-    closeHistory();
     loadSidebar();
     toast('已切换到该会话，继续提问会接着聊');
   }catch(e){
@@ -1022,169 +929,6 @@ async function loadSidebar(){
     });
   }catch(e){
     list.innerHTML = '<div class="side-empty">历史记录加载失败</div>';
-  }
-}
-
-/* ═══ 用户档案抽屉 ═══ */
-let _tabooOptions = [];
-let _tabooSelected = [];
-function openProfile(){
-  closeSheet();
-  document.getElementById('profMask').classList.add('show');
-  document.getElementById('profPanel').classList.add('show');
-  loadProfile();
-}
-function closeProfile(){
-  document.getElementById('profMask').classList.remove('show');
-  document.getElementById('profPanel').classList.remove('show');
-}
-async function loadProfile(){
-  const list = document.getElementById('profList');
-  list.innerHTML = '<div class="hist-loading">加载中<i></i><i></i><i></i></div>';
-  try{
-    const r = await fetch('/api/state?user_id=' + encodeURIComponent(UID) + '&session_id=' + encodeURIComponent(SID));
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    const d = (j && j.data) || {};
-    _tabooOptions = d.taboo_options || [];
-    renderProfile(d.profile || {});
-  }catch(e){
-    list.innerHTML = '<div class="hist-empty"><b>📡</b>档案加载失败<br><span>请检查网络后重试</span></div>';
-    toast('档案加载失败');
-  }
-}
-function renderProfile(prof){
-  const list = document.getElementById('profList');
-  list.innerHTML = '';
-  if(!prof.identity){
-    list.innerHTML = '<div class="hist-empty"><b>📭</b>暂无档案数据</div>';
-    return;
-  }
-  const id = prof.identity || {}, pre = prof.preferences || {}, beh = prof.behavior || {}, step = prof.next_step || {};
-  const s1 = document.createElement('div'); s1.className = 'prof-sec'; s1.textContent = '① 我是谁';
-  list.appendChild(s1);
-  const c1 = document.createElement('div'); c1.className = 'prof-card';
-  let days = '—';
-  if(id.since){
-    const st = new Date(id.since + 'T00:00:00+08:00').getTime();
-    if(!isNaN(st)) days = Math.max(1, Math.floor((Date.now() - st) / 86400000) + 1) + ' 天';
-  }
-  c1.innerHTML =
-    '<div class="prof-row"><span class="em">👤</span><div><b>' + escapeHtml(id.nickname || '还没设置昵称') + '</b>' +
-    '<p>使用小优 ' + days + ' · 从 ' + escapeHtml(id.since || '—') + ' 开始</p></div></div>' +
-    '<div class="prof-row"><span class="em">🎯</span><div><b>' + escapeHtml(pre.goal_tag || '还没选目标') + '</b>' +
-    '<p>当前健康目标</p></div></div>';
-  const goalBtn = document.createElement('button');
-  goalBtn.className = 'prof-btn'; goalBtn.textContent = '切换目标';
-  goalBtn.style.marginTop = '8px';
-  goalBtn.onclick = () => { closeProfile(); openSheet(); };
-  c1.appendChild(goalBtn);
-  list.appendChild(c1);
-  const s2 = document.createElement('div'); s2.className = 'prof-sec'; s2.textContent = '② 它记得我';
-  list.appendChild(s2);
-  const c2 = document.createElement('div'); c2.className = 'prof-card';
-  const names = pre.allergy_names || [], labels = pre.disease_labels || [], excluded = pre.excluded_foods || [];
-  const meals = beh.recent_meals || [];
-  const wk = (beh.week_trend || []).reduce((s,x)=>s+(x.meal_count||0),0);
-  let mem = '';
-  if(names.length){
-    mem += '<div class="prof-row"><span class="em">🛡️</span><div><b>过敏 / 不耐受</b><p>' +
-      escapeHtml(names.join('、')) + '</p></div></div>';
-  }
-  if(labels.length){
-    mem += '<div class="prof-row"><span class="em">🫀</span><div><b>慢病管理</b><p>' +
-      escapeHtml(labels.join('、')) + '</p></div></div>';
-  }
-  if(excluded.length){
-    mem += '<div class="prof-row"><span class="em">🚫</span><div><b>已帮你排除的食材</b><div style="margin-top:3px">' +
-      excluded.map(x=>'<span class="prof-chip">'+escapeHtml(x)+'</span>').join('') + '</div></div></div>';
-  }
-  if(wk > 0){
-    mem += '<div class="prof-row"><span class="em">📅</span><div><b>近 7 天</b><p>共记录 ' + wk + ' 餐 · 已连续坚持 ' + (beh.streak || 0) + ' 天</p></div></div>';
-  }
-  if(meals.length){
-    mem += '<div class="prof-row"><span class="em">📒</span><div><b>最近台账</b><p>' +
-      meals.slice(0,3).map(m=>escapeHtml((m.meal_tag || '') + '：' + m.content)).join('<br>') + '</p></div></div>';
-  }
-  if(!mem){
-    mem = '<div class="prof-empty">还没有记住什么～ 告诉我你的过敏或目标，我一辈子帮你记着。</div>';
-  }
-  c2.innerHTML = mem;
-  const editBtn = document.createElement('button');
-  editBtn.className = 'prof-btn'; editBtn.textContent = '✏️ 管理禁忌';
-  editBtn.style.marginTop = '8px';
-  editBtn.onclick = () => renderTabooEditor(pre.allergy_ids || []);
-  c2.appendChild(editBtn);
-  list.appendChild(c2);
-  const s3 = document.createElement('div'); s3.className = 'prof-sec'; s3.textContent = '③ 下一步建议';
-  list.appendChild(s3);
-  const c3 = document.createElement('div'); c3.className = 'prof-card';
-  const stepTxt = document.createElement('div');
-  stepTxt.className = 'prof-row';
-  stepTxt.innerHTML = '<span class="em">💡</span><div><b>' +
-    escapeHtml(step.text || '告诉我你今晚想吃什么，我帮你搭一餐') + '</b></div>';
-  c3.appendChild(stepTxt);
-  const go = document.createElement('button');
-  go.className = 'prof-btn primary'; go.textContent = '好的，去做';
-  go.onclick = () => {
-    closeProfile();
-    if(step.action === 'build_meal'){ quickAsk('帮我搭一餐'); return; }
-    if(step.action === 'confirm_allergy'){ renderTabooEditor(pre.allergy_ids || []); return; }
-    input.value = '帮我记一下：';
-    input.style.height = 'auto';
-    input.focus();
-  };
-  c3.appendChild(go);
-  list.appendChild(c3);
-}
-function renderTabooEditor(selected){
-  _tabooSelected = (selected || []).slice();
-  const list = document.getElementById('profList');
-  list.innerHTML = '';
-  const head = document.createElement('div'); head.className = 'prof-sec'; head.textContent = '✏️ 管理禁忌';
-  list.appendChild(head);
-  const hint = document.createElement('div');
-  hint.style.cssText = 'font-size:11px;color:var(--ink-3);padding:0 4px 8px;line-height:1.6';
-  hint.textContent = '勾选需要小优帮你避开的类别（仅支持已知类别）';
-  list.appendChild(hint);
-  if(!_tabooOptions.length){
-    list.innerHTML = '<div class="hist-empty"><b>📭</b>暂无可选项</div>';
-    return;
-  }
-  _tabooOptions.forEach(o => {
-    const row = document.createElement('label');
-    row.className = 'prof-tag-row';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = _tabooSelected.indexOf(o.id) !== -1;
-    cb.onchange = () => {
-      if(cb.checked){ if(_tabooSelected.indexOf(o.id) === -1) _tabooSelected.push(o.id); }
-      else { _tabooSelected = _tabooSelected.filter(x => x !== o.id); }
-    };
-    const nm = document.createElement('span');
-    nm.textContent = (o.disclaimer_type === 'disease' ? '🫀 ' : '🛡️ ') + o.name;
-    row.appendChild(cb); row.appendChild(nm);
-    list.appendChild(row);
-  });
-  const btnRow = document.createElement('div');
-  btnRow.className = 'prof-btn-row';
-  const save = document.createElement('button');
-  save.className = 'prof-btn primary'; save.textContent = '保存';
-  save.onclick = () => saveTabooSelection();
-  const back = document.createElement('button');
-  back.className = 'prof-btn'; back.textContent = '返回';
-  back.onclick = () => loadProfile();
-  btnRow.appendChild(save); btnRow.appendChild(back);
-  list.appendChild(btnRow);
-}
-async function saveTabooSelection(){
-  const j = await post('/api/session', {
-    user_id: UID, session_id: SID, action: 'switch', goal_tag: null, allergies: _tabooSelected
-  });
-  if(j){
-    toast('已保存：小优记住你要避开的食物了');
-    loadProfile();
-    loadContextPanel();
   }
 }
 
@@ -1290,6 +1034,7 @@ fetch('/health').then(r=>r.json()).then(j=>{
     .catch(()=>{ /* 后端不可达：保留静态首屏 */ });
   loadSidebar();
   loadContextPanel();
+  initTTS();
 })();
 </script>
 </body>
