@@ -192,23 +192,52 @@ def test_ledger_record_with_ledger_word(client):
 
 
 def test_goal_weight_loss_phrase(client):
-    """「我想减重」→ 识别为减脂目标（此前漏「想减重」词）。"""
+    """「我想减重/想降体重」→ 识别为减脂目标（此前漏「想减重」；三审补「降体重」死词）。"""
     from app.main import _detect_goal
     assert _detect_goal("我想减重，给我推荐个方案") == "减脂"
+    assert _detect_goal("我想降体重，怎么吃") == "减脂", "「想降体重」此前是死词（只进健康状态词、无目标映射）"
+    assert _detect_goal("想增重") == "增肌", "「降体重」不得混淆「增重」反向意图"
 
 
 def test_ledger_kcal_synonym(client):
-    """台账估算接入同义词（西红柿→番茄/地瓜→红薯）→ 有数字估算。"""
+    """台账估算接入同义词（西红柿→番茄/地瓜→红薯）→ 具体食材项出现（三审收窄断言）。"""
     d = client.post("/api/chat", json={
         "user_id": "u", "session_id": "gm_kcal", "message": "帮我记一下：中午吃了西红柿炒鸡蛋和两块地瓜"}).json()["data"]
     r = str(d.get("reply") or "")
-    assert any(ch.isdigit() for ch in r), "台账估算应含数字（同义词归一后命中速查表）"
+    assert "番茄" in r and "红薯" in r, (
+        f"同义词归一后应命中速查表具体项（番茄/红薯），实际: {r!r}"
+    )
+
+
+def test_ledger_kcal_compound_rice(client):
+    """三审 P1：整句别名替换破坏复合食材——「糙米饭」不得被子串「米饭→白米饭」误算成 130。"""
+    from app.main import _estimate_diet_kcal
+    total, items = _estimate_diet_kcal("中午吃了糙米饭")
+    assert total == 348.0, f"糙米饭应命中糙米 348 千卡，实际 {total}（{items}）"
+    assert items[0]["food"] == "糙米", f"应为糙米，实际 {items[0]['food']}"
+    total2, _ = _estimate_diet_kcal("中午吃了大米饭")
+    assert total2 == 130.0, f"大米饭应命中白米饭 130 千卡，实际 {total2}"
+
+
+def test_ledger_query_ledger_word(client):
+    """三审 P2：裸「台账」回归查询语义——「查一下我的台账」不得漏判成闲聊。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_qry", "message": "查一下我的台账"}).json()["data"]
+    assert d["intent"] == "diet_query", f"应查询台账，实际 {d['intent']}"
+
+
+def test_ledger_how_record_not_recorded(client):
+    """三审 P2：「怎么记录台账」是问方法，不得被「记录台账」误记为台账。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_how", "message": "怎么记录台账"}).json()["data"]
+    assert d["intent"] != "diet_record", f"问方法不应记台账，实际 {d['intent']}"
 
 
 def test_care_goal_disclaimer(client):
-    """会话目标=调理（稳糖）时，常规问答必须带免责。"""
+    """会话目标=调理（稳糖）时，常规问答必须带免责（三审：走非疾病途径设 goal，锁死新分支）。"""
     c = client
-    c.post("/api/chat", json={"user_id": "u", "session_id": "gm_care", "message": "我要调理血糖"})
+    # 「我想控糖」→ _detect_goal=调理 写库，但不触发疾病判定（控糖不在疾病标签表）
+    c.post("/api/chat", json={"user_id": "u", "session_id": "gm_care", "message": "我想控糖"})
     r = c.post("/api/chat", json={
-        "user_id": "u", "session_id": "gm_care", "message": "推荐一份早餐搭配"}).json()
-    assert r.get("disclaimer"), "调理会话常规问答必须带免责"
+        "user_id": "u", "session_id": "gm_care", "message": "鸡蛋有多少蛋白质？"}).json()
+    assert r.get("disclaimer"), "调理会话常规问答必须带免责（goal_tag=调理 分支）"

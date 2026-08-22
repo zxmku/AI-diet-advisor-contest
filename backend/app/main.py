@@ -164,7 +164,7 @@ _GOAL_PLAN_MAP: dict[str, dict] = {
 
 # P2 人群目标关键词 → goal_tag（与 _GOAL_PLAN_MAP 三套方案一致；控糖/血糖/稳糖→调理）
 _GOAL_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "减脂": ("减脂", "减肥", "瘦身", "减重", "燃脂", "掉秤", "瘦下来"),
+    "减脂": ("减脂", "减肥", "瘦身", "减重", "燃脂", "掉秤", "瘦下来", "降体重"),
     "增肌": ("增肌", "增重", "长肌肉", "练肌肉", "力量训练"),
     "调理": ("控糖", "血糖", "稳糖", "糖尿病", "高血糖", "血糖高", "糖友", "慢病", "三高"),
 }
@@ -566,13 +566,14 @@ _DIET_RECORD_TRIGGERS: tuple[str, ...] = (
 # 会被裸「台账」误判成查询；查询必须带明确动词（吃了什么/查台账/查看记录/历史饮食）。
 _DIET_QUERY_TRIGGERS: tuple[str, ...] = (
     "吃了什么", "吃了啥", "饮食记录", "最近吃什么", "我吃了什么", "我吃了啥",
-    "记了什么", "查台账", "查看记录", "历史饮食",
+    "记了什么", "查台账", "查看记录", "历史饮食", "台账",
 )
 # 记录触发词补充：记录台账/记台账（与查询触发词解耦）
 _DIET_RECORD_TRIGGERS_EXTRA: tuple[str, ...] = ("记台账", "记录台账")
 # 问句/求方案语义：命中则不当作记录（如「帮我记一下今天吃什么」是求建议，不是记台账）。
+# 三审修复：补「怎么」——「怎么记录台账」是问方法，不得被「记录台账」误记为台账。
 _MEAL_REQUEST_HINTS: tuple[str, ...] = (
-    "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么吃", "安排",
+    "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么", "安排",
 )
 
 # ── P5b 情感陪伴（一人食陪聊）：触发词 ──
@@ -583,8 +584,17 @@ _COMPANION_TRIGGERS: tuple[str, ...] = (
 
 
 def _is_diet_query(message: str) -> bool:
-    """是否命中「查询饮食台账」意图。"""
-    return any(t in (message or "") for t in _DIET_QUERY_TRIGGERS)
+    """是否命中「查询饮食台账」意图。
+
+    三审修复：裸「台账」回归查询语义（「查一下我的台账」「我的台账有哪些」此前漏判成
+    闲聊）；但记录动作（记台账/记录台账/帮我记一笔…）不得被「台账」劫持成查询——
+    记录语义优先排除后再判查询。
+    """
+    text = message or ""
+    if ("台账" in text and any(t in text for t in _DIET_RECORD_TRIGGERS)) \
+            or any(t in text for t in _DIET_RECORD_TRIGGERS_EXTRA):
+        return False
+    return any(t in text for t in _DIET_QUERY_TRIGGERS)
 
 
 def _is_diet_record(message: str) -> bool:
@@ -640,22 +650,40 @@ def _estimate_diet_kcal(message: str) -> tuple[float | None, list[dict]]:
     text = message or ""
     # Gemini 审查回归：台账估算接入同义词归一（「西红柿」→「番茄」、「地瓜」→「红薯」），
     # 否则口语食材名查不到表，估算为 0 或漏算。
-    for alias, canon in nutrition_lookup._SYNONYM_ALIASES.items():
-        if alias in text:
-            text = text.replace(alias, canon)
-    matches: list[tuple[str, int, int]] = []
-    for key in sorted(nutrition_lookup.NUTRITION_TABLE, key=len, reverse=True):
+    # 三审修复：原实现先对整句做别名 replace——「米饭」→「白米饭」会把「糙米饭」误替换
+    # 成「糙白米饭」，导致糙米(348)被错算成白米饭(130)。改为位置级归一：先在原文找表内
+    # 食材（长名优先），未被表内食材覆盖的位置再按别名映射到 canon，最后按位置去重叠。
+    table_keys = sorted(nutrition_lookup.NUTRITION_TABLE, key=len, reverse=True)
+    matches: list[tuple[int, int, str]] = []  # (start, length, table_key)
+    for key in table_keys:
         idx = text.find(key)
         while idx != -1:
-            matches.append((key, idx, _grams_near(text, idx, len(key))))
+            matches.append((idx, len(key), key))
             idx = text.find(key, idx + len(key))
+    for alias, canon in sorted(
+        nutrition_lookup._SYNONYM_ALIASES.items(), key=lambda kv: -len(kv[0])
+    ):
+        if alias == canon or alias not in text or canon not in nutrition_lookup.NUTRITION_TABLE:
+            continue
+        idx = text.find(alias)
+        while idx != -1:
+            if not any(s <= idx < s + l for s, l, _ in matches):
+                matches.append((idx, len(alias), canon))
+            idx = text.find(alias, idx + len(alias))
     if not matches:
         return None, []
-    matches.sort(key=lambda m: m[1])
+    matches.sort(key=lambda m: m[0])
     items: list[dict] = []
     total = 0.0
-    for key, _idx, grams in matches:
+    occupied: list[tuple[int, int]] = []
+    for s, l, key in matches:
+        e = s + l
+        # 去重叠：表内 key 长名优先已先占位；后入的别名映射与已占区间重叠则跳过
+        if any(s < e2 and s2 < e for s2, e2 in occupied):
+            continue
+        occupied.append((s, e))
         row = nutrition_lookup.NUTRITION_TABLE[key]
+        grams = _grams_near(text, s, l)
         kcal: float | None = None
         if row.get("kcal") is not None:
             kcal = round(float(row["kcal"]) * grams / 100, 1)
@@ -915,6 +943,24 @@ def _pick_reply_chunk(chunks: Sequence[SourceChunk], query: str) -> SourceChunk 
                 key=lambda c: (_token_overlap(c.content, q_tokens), c.score or 0),
             )
     return max(chunks, key=lambda c: (_token_overlap(c.content, q_tokens), c.score or 0))
+
+
+def _platform_reply_prefix(message: str) -> tuple[str | None, SourceChunk | None]:
+    """混合意图：消息含平台咨询（收费/开通/会员/价格…）时，从 C 库取平台回答片段。
+
+    三审修复：复用 _pick_reply_chunk 的 C 库价格优先逻辑（「会员多少钱」不得答到
+    「5.2 渠道合作」或「4.1 案例」块），返回 (前缀文本, 命中的 C 块)；未命中平台
+    咨询返回 (None, None)。top_k=8：价目表块（C 2.1 个人用户服务）在 BM25 中常排
+    6-9 位，top_k=3 会取不到导致答非所问。
+    """
+    if not any(h in (message or "") for h in _PLATFORM_HINTS):
+        return None, None
+    chunks = list(get_retriever().retrieve(message, top_k=8, current_query=message))
+    c_chunks = [c for c in chunks if c.source == "C"]
+    if not c_chunks:
+        return None, None
+    c_top = _pick_reply_chunk(c_chunks, message)
+    return f"【平台服务】{c_top.content.strip()[:200]}…", c_top
 
 
 def _session_allergies(user_id: str, session_id: str | None) -> list[str]:
@@ -1293,9 +1339,16 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         goal = _meal_goal(message, _session_goal_tag(req.session_id, req.user_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
-            reply = _MEAL_GOAL_ASK
+            # 三审修复：混合意图——平台咨询不得因追问目标被丢弃，先给平台回答再追问。
+            plat_prefix, plat_chunk = _platform_reply_prefix(message)
+            reply = (f"{plat_prefix}\n\n" + _MEAL_GOAL_ASK) if plat_prefix else _MEAL_GOAL_ASK
             intent = "meal_goal_ask"
-            sources = []
+            sources = (
+                [{"source": plat_chunk.source, "chapter": plat_chunk.chapter,
+                  "section": plat_chunk.section, "content": plat_chunk.content,
+                  "score": plat_chunk.score}]
+                if plat_chunk else []
+            )
         else:
             meal = _build_meal(goal, excluded, _meal_time_from_message(message))
             reply = (
@@ -1305,17 +1358,18 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             )
             # Gemini 审查回归（漏洞2）：混合意图——「专业版会员多少钱？顺便…晚餐怎么吃」
             # 不得丢弃平台商业咨询（素材 C）；追加平台回答，两段都给。
-            if any(h in (message or "") for h in _PLATFORM_HINTS):
-                c_top = next(
-                    (c for c in get_retriever().retrieve(message, top_k=3, current_query=message)
-                     if c.source == "C"),
-                    None,
-                )
-                if c_top:
-                    reply = f"【平台服务】{c_top.content.strip()[:200]}…\n\n【膳食搭配】\n" + reply
+            # 三审修复：复用 _pick_reply_chunk 价格优先逻辑（不得答到「渠道合作」块），
+            # 命中的 C 块一并进 sources 保持一致。
+            plat_prefix, plat_chunk = _platform_reply_prefix(message)
+            if plat_prefix:
+                reply = f"{plat_prefix}\n\n【膳食搭配】\n" + reply
             intent = "meal"
             model_tag = "local-rules"
             sources = _meal_response_sources(meal)
+            if plat_chunk:
+                sources = sources + [{"source": plat_chunk.source, "chapter": plat_chunk.chapter,
+                                      "section": plat_chunk.section, "content": plat_chunk.content,
+                                      "score": plat_chunk.score}]
     elif _decision_cand and not is_med_query and not (is_num_query and ("多少" in (message or "") or "几" in (message or ""))):
         # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）──
         # 暴风雪回归：仅「明确数值问法」（含 多少/几，如「麦当劳麦香鸡多少千卡」）
