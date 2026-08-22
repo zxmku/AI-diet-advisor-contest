@@ -153,3 +153,13 @@ def test_identity_question_not_meal_ask(client):
         "user_id": "u", "session_id": "bz_who", "message": "你到底是谁？能帮我做些什么？"}).json()["data"]
     assert d["intent"] == "chitchat", f"应自我介绍，实际 {d['intent']}"
     assert "膳食顾问" in str(d.get("reply") or "")
+
+
+def test_disease_meal_trigger_not_plan_template(client):
+    """「有严重的脂肪肝…早餐吃什么能改善」→ 疾病问法不得落一餐方案模板（local-rules 下
+    曾降级成增肌方案）；应走疾病路径（脂肪肝/控油/高纤维相关建议）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_fat2", "message": "有严重的脂肪肝，平时早餐吃什么能改善？"}).json()["data"]
+    r = str(d.get("reply") or "")
+    assert "增肌" not in r and "热量盈余" not in r, "疾病问法不得给增肌方案"
+    assert ("脂肪肝" in r) or ("控油" in r) or ("控糖" in r), "应给疾病针对性建议"

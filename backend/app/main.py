@@ -791,6 +791,23 @@ def _chitchat_local_reply(message: str) -> str:
     )
 
 
+def _disease_local_reply(message: str) -> str:
+    """local-rules 疾病问法兜底（无 LLM 且知识库无该疾病内容时）：
+    不引无关方案块（暴风雪回归：「脂肪肝…早餐」曾引到增肌方案块），
+    给通用疾病膳食原则；免责由上层按 is_disease_query 注入。"""
+    label = None
+    for kw, lab in _DISEASE_LABELS:
+        if kw in (message or ""):
+            label = lab
+            break
+    head = f"结合您的{label}需求，" if label else "结合您的健康管理需求，"
+    return (
+        f"{head}\n\n针对您提到的健康情况，膳食上建议遵循**均衡清淡**原则："
+        "控油控糖、少盐少辣，优先高纤维蔬菜与优质蛋白，主食粗细搭配。"
+        "具体忌口与营养方案请以医嘱为准。"
+    )
+
+
 def _handle_companion(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
 ) -> tuple[str, str, bool]:
@@ -1037,6 +1054,7 @@ _DISEASE_LABELS: tuple[tuple[str, str], ...] = (
     ("肾病", "护肾"), ("肾功能不全", "护肾"),
     ("孕期", "孕期营养"), ("孕妇", "孕期营养"), ("怀孕", "孕期营养"),
     ("甲亢", "甲状腺管理"), ("甲减", "甲状腺管理"),
+    ("脂肪肝", "护肝"),
 )
 
 
@@ -1254,7 +1272,11 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         )
         intent = "chitchat"
         sources = []
-    elif _is_meal_intent(message) and not is_med_query and not (is_num_query and num_food):
+    elif _is_meal_intent(message) and not is_med_query and not is_disease_query(message) \
+            and not (is_num_query and num_food):
+        # 暴风雪回归：疾病问法（「有严重的脂肪肝…早餐吃什么能改善」）不得落入
+        # 一餐方案模板（local-rules 下会降级成增肌/减脂方案）——疾病问法走检索/
+        # LLM 疾病路径（免责+针对性建议）。
         goal = _meal_goal(message, _session_goal_tag(req.session_id, req.user_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
@@ -1408,7 +1430,14 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             f"【{top.chapter} · {top.section}】\n{snippet}"
                         )
                     else:
-                        reply = f"【{top.chapter} · {top.section}】\n{snippet}"
+                        if is_disease_query(strip_disease_negations(message)):
+                            # 暴风雪回归：疾病问法 local-rules 兜底不引无关知识块
+                            # （「脂肪肝…早餐吃什么」曾引到增肌方案块）——知识库无该
+                            # 疾病内容时给通用疾病膳食原则，避免答非所问。
+                            # 注意用否定剥离后的消息：「我没有糖尿病」不得触发此分支。
+                            reply = _disease_local_reply(message)
+                        else:
+                            reply = f"【{top.chapter} · {top.section}】\n{snippet}"
 
     # P2 画像持久化：过敏全集写回 session + 隐含人群目标动态更新
     # （写库放在 _persist_turn 之前；异常不影响主流程）
