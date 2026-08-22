@@ -43,6 +43,7 @@ from app.compliance import (
     DISCLAIMER_STANDARD,
     detect_allergies,
     excluded_foods,
+    is_dietary_domain,
     is_disease_query,
     is_medication_query,
 )
@@ -1040,9 +1041,15 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             sources = []
 
         if not numeric_hit and not numeric_miss:
-            if not chunks:
-                # 无检索命中：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应（打招呼/闲聊），
-                # 失败再降级原话术——保证「你好」这类友好交互像真 AI，而非甩规则话术。
+            # 领域路由门控：区分「膳食顾问需求」与「闲聊/非膳食」。
+            # 无检索命中，或命中了检索块但用户问题不属于膳食领域（如「大龙虾吃什么」是
+            # 动物习性、「世界首富是谁」是常识）→ 走闲聊分支，绝不硬套无关知识块。
+            top = _pick_reply_chunk(chunks, message) if chunks else None
+            is_platform = bool(top and top.source == "C")
+            in_domain = is_platform or is_dietary_domain(message)
+            if not chunks or not in_domain:
+                # 无检索命中 / 非膳食领域：用药类硬拦截（不经 LLM），其余尝试 LLM 自然回应
+                # （打招呼/闲聊/情感陪伴），失败再降级原话术。
                 if is_medication_query(message):
                     reply = (
                         "本工具不提供用药建议，请遵医嘱。如有膳食搭配、营养方面的疑问，"
@@ -1072,8 +1079,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         )
                         intent = "chitchat"
             else:
-                top = _pick_reply_chunk(chunks, message)
-                intent = "platform" if top.source == "C" else "nutrition_qa"
+                intent = "platform" if is_platform else "nutrition_qa"
                 # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
                 # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
                 used_llm = False
