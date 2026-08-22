@@ -93,7 +93,7 @@ if not AUDIT_HMAC_KEY:
 
 # ── 网关边界（蓝图 8.4：空输入/超长/限流）──
 MAX_MESSAGE_LEN: int = _as_int("HEALTHPICK_MAX_MESSAGE_LEN", "500")
-RATE_LIMIT_PER_MIN: int = _as_int("HEALTHPICK_RATE_LIMIT_PER_MIN", "60")
+RATE_LIMIT_PER_MIN: int = _as_int("HEALTHPICK_RATE_LIMIT_PER_MIN", "300")
 
 # ── CORS 白名单（逗号分隔；默认本地前端端口，prod 禁用 *）──
 _cors_raw = os.environ.get("HEALTHPICK_CORS_ORIGINS", "")

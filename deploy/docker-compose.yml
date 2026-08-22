@@ -13,7 +13,7 @@ services:
       # 进阶2：填入 DeepSeek Key 即升级为 LLM 动态生成；留空则纯规则降级
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - HEALTHPICK_ENV=prod
-      - HEALTHPICK_RATE_LIMIT_PER_MIN=60
+      - HEALTHPICK_RATE_LIMIT_PER_MIN=300
       # SQLite 数据文件重定向到独立数据卷目录，避免空命名卷覆盖 /app/backend 代码目录
       - DATABASE_URL=sqlite:////app/data/healthpick.db
     restart: unless-stopped
