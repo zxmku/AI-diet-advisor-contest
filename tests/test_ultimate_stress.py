@@ -157,3 +157,122 @@ def test_myth_not_recorded_as_ledger(client):
     """恐慌问法不得被「吃了」劫持成台账记录（myth 优先）。"""
     d = _chat(client, "我今晚吃了番茄炒虾仁，我是不是要死了？", "us_panic")["data"]
     assert d["intent"] == "myth_buster", f"恐慌问应辟谣，实际 {d['intent']}"
+
+
+# ═══ 第七波：工程师回归审查修复（三工程师并行发现）═══
+
+def test_light_fasting_not_risk_warning(client):
+    """「轻断食」是流行概念，不得被危险信号「断食」误伤。"""
+    d = _chat(client, "下周准备体检，听说轻断食能快速降体重，靠谱吗？", "w_light")["data"]
+    assert d["intent"] != "risk_warning", f"轻断食不得误报危险信号: {d['intent']}"
+
+
+def test_continuous_fasting_still_warns(client):
+    """连续断食只喝水仍是危险信号（正例保留）。"""
+    r = _chat(client, "连续断食3天只喝水，头晕得厉害", "w_cont")
+    assert r["data"]["intent"] == "risk_warning", "连续断食必须预警"
+    assert r.get("disclaimer"), "风险场景带免责"
+
+
+def test_rotten_apple_food_not_keto(client):
+    """食物有烂苹果味（水果）→ 不误报酮症酸中毒。"""
+    d = _chat(client, "这个苹果有烂苹果味还能吃吗？", "w_apple")["data"]
+    assert d["intent"] != "risk_warning", "食物烂味不得报酮症"
+
+
+def test_breath_rotten_apple_keto_warns(client):
+    """呼吸有烂苹果味（人体语境）→ 酮症酸中毒预警（正例保留）。"""
+    r = _chat(client, "我呼吸有一股烂苹果味，正常吗？", "w_breath")
+    assert "医院" in str(r["data"]["reply"]) or "就医" in str(r["data"]["reply"]), "人体烂苹果味必须就医预警"
+
+
+def test_keto_prevention_question_passes(client):
+    """「怎么预防酮症酸中毒」是预防问，不得直接预警。"""
+    d = _chat(client, "生酮饮食怎么预防酮症酸中毒？", "w_prev")["data"]
+    assert d["intent"] != "risk_warning", f"预防问不得预警: {d['intent']}"
+
+
+def test_mammal_not_disease(client):
+    """「哺乳动物」不得被「哺乳」疾病词误伤免责。"""
+    r = _chat(client, "哺乳动物的肉类和鱼类哪个蛋白高？", "w_mam")
+    assert not r.get("disclaimer"), "哺乳动物问法不得误贴疾病免责"
+    assert r["data"]["intent"] != "risk_warning"
+
+
+def test_lactation_mother_disclaimer(client):
+    """哺乳期妈妈（精确词）→ 免责保留。"""
+    r = _chat(client, "哺乳期妈妈为了下奶，每天喝两大碗浓白猪蹄汤好不好？", "w_lac")
+    assert r.get("disclaimer"), "哺乳期必须带免责"
+
+
+def test_uric_acid_normal_range_disclaimer(client):
+    """「尿酸正常范围是多少」科普问 → 免责（补裸尿酸词）。"""
+    r = _chat(client, "尿酸正常范围是多少？", "w_ua")
+    assert r.get("disclaimer"), "尿酸科普问答应带免责"
+
+
+def test_contact_section_direct_6_1(client):
+    """客服电话 → 章节直选 C 库 6.1 联系块。"""
+    d = _chat(client, "客服电话是多少？", "w_contact")["data"]
+    rr = str(d["reply"])
+    assert "400-888" in rr, f"应答 6.1 联系块: {rr[:80]!r}"
+
+
+def test_price_section_direct_2_1(client):
+    """会员多少钱 → 章节直选 2.1 价目表（非 5.2 渠道/4.1 案例）。"""
+    d = _chat(client, "会员多少钱一个月？", "w_price")["data"]
+    rr = str(d["reply"])
+    assert "免费版" in rr and "价格" in rr, f"应答 2.1 价目表: {rr[:80]!r}"
+
+
+def test_dietary_question_not_platform(client):
+    """「官网买的鸡胸肉能吃吗」是膳食问，不得被平台词劫持。"""
+    r = _chat(client, "官网买的鸡胸肉能吃吗？", "w_diet")
+    assert r["data"]["intent"] != "platform", f"膳食问不得判平台: {r['data']['intent']}"
+
+
+def test_half_jin_conversion(client):
+    """半斤鸡胸肉 → 250g 折算，标签同步（不得残留「每100克」）。"""
+    d = _chat(client, "半斤鸡胸肉多少千卡？", "w_half")["data"]
+    rr = str(d["reply"])
+    assert "250" in rr and "412.5" in rr, f"半斤换算: {rr[:90]!r}"
+    assert "每100克可食部约" not in rr, "标签必须同步为 250 克"
+
+
+def test_question_residue_not_miss(client):
+    """「晚餐是不是该少吃点碳水」问句残渣不得报 miss。"""
+    d = _chat(client, "晚餐是不是该少吃点碳水？", "w_q")["data"]
+    assert d["intent"] != "nutrition_lookup_miss", f"残渣不得 miss: {d['intent']}"
+
+
+def test_portion_question_guide(client):
+    """「鸡蛋推荐吃几个」份量问 → 引导话术而非整表直出。"""
+    d = _chat(client, "鸡蛋推荐吃几个？", "w_portion")["data"]
+    rr = str(d["reply"])
+    assert "份量" in rr or "目标" in rr, f"应给份量引导: {rr[:80]!r}"
+
+
+def test_guarantee_weight_loss_correction(client):
+    """「保证月瘦20斤」→ 追加热量缺口纠偏（不限平台分支）。"""
+    d = _chat(client, "你们保证月瘦20斤吗？", "w_guar")["data"]
+    rr = str(d["reply"])
+    assert "热量缺口" in rr, f"应纠偏: {rr[-120:]!r}"
+
+
+def test_exemption_bidirectional(client):
+    """「海鲜过敏，但鱼没事」→ 鱼类豁免（双向包含）。"""
+    from app.main import _apply_allergy_exemptions
+    from app.compliance import excluded_foods, detect_allergies
+    exc = _apply_allergy_exemptions(
+        excluded_foods(detect_allergies("我海鲜过敏，但鱼没事，能推荐吗")),
+        "我海鲜过敏，但鱼没事，能推荐吗",
+    )
+    assert not any("鱼" in f for f in exc), f"鱼应被豁免: {exc}"
+
+
+def test_control_sugar_question_keeps_retrieval(client):
+    """控糖是目标词：带免责但不得被疾病通用回复覆盖（GI 对比走检索）。"""
+    r = _chat(client, "燕麦和白米饭的GI值分别是多少？哪个更适合控糖？", "w_gi")
+    rr = str(r["data"]["reply"])
+    assert r.get("disclaimer"), "控糖问法带免责"
+    assert "均衡清淡" not in rr[:40], "不得落疾病通用回复（应走检索）"

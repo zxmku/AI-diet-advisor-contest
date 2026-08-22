@@ -861,8 +861,34 @@ def _disease_local_reply(message: str) -> str:
     )
 
 
+def _is_disease_answer_path(message: str) -> bool:
+    """疾病「回答路径」判定：命中疾病词 → 疾病兜底通用原则。
+
+    第七波修正：控糖/稳糖是**目标词**（调理 goal），不是疾病声明——
+    「燕麦…哪个更适合控糖」要答 GI 对比（检索），不得被疾病通用回复覆盖；
+    但免责仍由 disease（含控糖）注入，两处解耦。
+    """
+    scan = strip_disease_negations(message or "")
+    if not is_disease_query(scan):
+        return False
+    hit_goal_only = any(g in scan for g in ("控糖", "稳糖")) and not any(
+        k in scan for k in (
+            "血糖", "糖尿病", "高血糖", "糖友", "慢病", "三高", "糖高", "胰岛素",
+            "血压", "尿酸", "痛风", "肾病", "脂肪肝", "胆固醇", "血脂", "甲状腺",
+            "肿瘤", "贫血", "失眠", "抑郁", "焦虑", "胃炎", "胃溃疡", "哺乳",
+            "怀孕", "孕期", "孕妇", "甲亢", "甲减", "用药", "药物",
+        )
+    )
+    return not hit_goal_only
+
+
 # ── 终极压测：危险信号（极端断食 / 酮症酸中毒前兆）──
 # 考官下套：极端危险行为不得当普通问答/FAQ 处理，必须风险预警 + 就医引导 + 免责。
+# 第七波护栏：子串触发词必须加语义约束——
+#  - 「断食」排除 轻断食/间歇性断食/16+8/断食法（流行概念，非极端危险）；
+#  - 「烂苹果味」须与人体语境词（嘴/呼吸/口气/呼出/尿）共现（食物烂味不得误报）；
+#  - 「只喝黑咖啡」遇「白天正常吃/正常吃饭/不减肥」放行；
+#  - 「酮症」遇「怎么预防/如何预防」放行（预防问不是已发作）。
 _DANGER_SIGNALS: tuple[tuple[str, str], ...] = (
     ("断食", "extreme_fast"),
     ("只喝水", "extreme_fast"),
@@ -885,13 +911,34 @@ _DANGER_REPLIES: dict[str, str] = {
         "切勿自行处理。平时也建议在专业人士指导下科学调整饮食结构。"
     ),
 }
+# 第七波护栏词表
+_DANGER_FAST_NEG = ("轻断食", "间歇性断食", "16+8", "16:8", "断食法", "断食疗法", "隔日断食")
+_DANGER_BODY_WORDS = ("嘴", "呼吸", "口气", "呼出", "口中", "尿", "尿液")
+_DANGER_BLACKCOFFEE_NEG = ("白天正常吃", "正常吃饭", "正常饮食", "不减肥", "搭配三餐")
+_DANGER_KETO_QUESTION = ("怎么预防", "如何预防", "怎么避免", "如何避免")
 
 
 def _danger_signal_reply(message: str) -> str | None:
-    """命中极端危险行为信号 → 返回风险预警回复；否则 None。"""
+    """命中极端危险行为信号 → 返回风险预警回复；否则 None（第七波：语义护栏）。"""
+    text = message or ""
     for signal, tag in _DANGER_SIGNALS:
-        if signal in (message or ""):
-            return _DANGER_REPLIES[tag]
+        if signal not in text:
+            continue
+        if signal == "断食":
+            if any(w in text for w in _DANGER_FAST_NEG):
+                continue  # 轻断食/间歇性断食：流行概念，不是极端危险
+            if not any(w in text for w in ("连续断食", "只喝水", "不吃饭", "不进食")):
+                continue  # 无「连续/只喝水/不吃饭」修饰 → 普通断食科普，放行
+        if signal == "烂苹果味":
+            if not any(w in text for w in _DANGER_BODY_WORDS):
+                continue  # 食物有烂苹果味（如水果）→ 非人体症状，不报酮症
+        if signal == "只喝黑咖啡":
+            if any(w in text for w in _DANGER_BLACKCOFFEE_NEG):
+                continue  # 白天正常吃 + 只喝黑咖啡 → 非极端断食
+        if signal == "酮症":
+            if any(w in text for w in _DANGER_KETO_QUESTION):
+                continue  # 预防问 → 放行检索/LLM 给科普
+        return _DANGER_REPLIES[tag]
     return None
 
 
@@ -942,21 +989,53 @@ def _usage_guide_reply(message: str) -> str | None:
     return None
 
 
+# 第七波：份量问（「鸡蛋推荐吃几个」「一天吃几个合适」）——local-rules 无个性化
+# 计算，不整表直出；给引导话术（表格数据仍可从 sources 查看）。
+_PORTION_QUESTION_MARKS: tuple[str, ...] = (
+    "吃几个", "吃多少", "多少合适", "几个合适", "每天几个", "一天几个", "吃几颗", "吃几片",
+)
+
+
+def _portion_question_reply(message: str) -> str | None:
+    if any(w in (message or "") for w in _PORTION_QUESTION_MARKS):
+        return (
+            "份量建议需要结合您的目标（减脂/增肌/控糖）与整体饮食结构，"
+            "常见食材的每 100 克营养数据已附在下方来源中。\n"
+            "告诉我您的目标，我可以帮您搭一餐并给出具体份量；"
+            "有慢病/特殊人群情况请以医嘱为准。"
+        )
+    return None
+
+
 def _apply_allergy_exemptions(excluded: list[str], message: str) -> list[str]:
     """细分过敏豁免：消息含「X不过敏/X没事/X可以吃/X能吃」时，从排除清单移除 X。
 
     终极压测（考官下套）：「我对花生过敏，但吃核桃腰果不过敏」——坚果族被整族
     排除时，明确豁免的核桃/腰果不得误排；只保留用户真正过敏的花生。
+    第七波：豁免判定改**双向包含**——「我海鲜过敏，但鱼没事」的豁免块「鱼」是
+    多字食材（三文鱼/鳕鱼）的子串，原 `f in block` 单向匹配不到（豁免失效）。
     """
     if not excluded:
         return excluded
     text = message or ""
-    blocks = re.findall(r"([\u4e00-\u9fff]{1,8}?)(?:不过敏|没事|可以吃|能吃)", text)
-    if not blocks:
+    raw_blocks = re.findall(r"([\u4e00-\u9fff]{1,8}?)(?:不过敏|没事|可以吃|能吃)", text)
+    if not raw_blocks:
         return excluded
+    # 第七波：豁免块清洗连接词/动词（「但鱼没事」→「鱼」；「吃鱼没事」→「鱼」），
+    # 否则「但」/「吃」混入块导致双向包含匹配失败（豁免失效）。
+    blocks = []
+    for b in raw_blocks:
+        for junk in ("但是", "不过", "但", "而", "就", "只", "吃", "喝", "觉得"):
+            b = b.replace(junk, "")
+        if b:
+            blocks.append(b)
     keep: list[str] = []
     for f in excluded:
-        if any(f in block for block in blocks):
+        # 双向包含（第七波）：豁免块「鱼」→ 多字食材「三文鱼/鳕鱼」子串，
+        # 豁免块「核桃腰果」→ 包含「核桃」「腰果」；不限块长度（单字「鱼」
+        # 也是有效豁免——用户主动声明「鱼没事」）。
+        exempted = any(f in block or block in f for block in blocks)
+        if exempted:
             continue
         keep.append(f)
     return keep
@@ -1086,18 +1165,68 @@ def _jin_scale(message: str) -> float | None:
 
 
 def _scale_lookup_reply(reply: str, scale: float, grams: int) -> str:
-    """把「每100克…约 X 千卡，Y 克…」按市斤倍率折算（GI/毫克等不乘）。"""
+    """把「每100克…约 X 千卡，Y 克…」按市斤倍率折算（GI/毫克等不乘）。
+
+    第七波修复：先对整个 reply 替换份量标签（原实现从 find("约") 切分后再
+    replace，标签「每100克可食部约」在 head 里导致永不命中——「半斤鸡胸肉」
+    数值×2.5 但文本仍写「每100克」的自相矛盾）。
+    """
+    reply = reply.replace("每100克可食部约", f"每{grams} 克（{grams // 100} 份 × 100 克）约", 1)
     idx = reply.find("约")
     if idx == -1:
         return reply
-    head, tail = reply[:idx], reply[idx:]
-    tail = tail.replace("每100克可食部约", f"每{grams} 克（{grams // 100} 份 × 100 克）约", 1)
+    head, tail = reply[: idx + 1], reply[idx + 1:]
     tail = re.sub(
         r"(\d+(?:\.\d+)?) (千卡|克)",
         lambda m: f"{round(float(m.group(1)) * scale, 1):g} {m.group(2)}",
         tail,
     )
     return head + tail
+
+
+# 第七波：平台问法「章节直选」——BM25 token 重叠对联系/服务/开通意图不可靠
+# （「客服电话」曾答到 4.2 企业案例、「会员多少钱」曾答到 5.2 渠道合作）。
+# 按意图词直接锁定 C 库章节，检索全量 C 块后精确过滤。
+_C_SECTION_ROUTES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("客服电话", "客服热线", "公司地址", "办公地址", "在哪办公", "联系方式",
+      "怎么联系", "官网", "官方网站", "中关村", "几层", "电话", "地址"),
+     "第六章联系我们", "本章概述"),
+    (("多少钱", "价格", "收费", "费用", "定价", "套餐", "订阅", "续费", "购买",
+      "会员", "专业版", "免费版", "标准版", "开通", "怎么用", "怎么买", "服务"),
+     "第二章产品服务体系", "2.1 个人用户服务"),
+    (("SaaS", "API", "企业", "年费", "讲座"),
+     "第二章产品服务体系", "2.2 企业用户服务"),
+    (("案例",), "第四章成功案例", "4.1 个人用户案例"),
+)
+# 平台强语义词：膳食问法 + 这些词仍判平台（「SaaS年费+痛风浓鸡汤」两段都答）；
+# 不含强词的膳食问（「官网买的鸡胸肉能吃吗」）不得被平台词劫持。
+_PLATFORM_STRONG_WORDS = (
+    "多少钱", "收费", "开通", "客服", "地址", "联系", "年费", "套餐", "订阅",
+    "续费", "购买", "价格", "费用", "定价", "付费", "升级", "专业版", "免费版",
+    "标准版", "SaaS", "API", "企业", "怎么用", "怎么买", "案例", "白皮书", "讲座",
+)
+
+
+def _c_chunk_for_query(message: str) -> SourceChunk | None:
+    """平台问法章节直选：按意图词锁定 C 库章节并取回该块（第七波）。"""
+    for words, chapter, section in _C_SECTION_ROUTES:
+        if any(w in (message or "") for w in words):
+            for c in get_retriever().retrieve(
+                f"{chapter} {section}", top_k=30, current_query=message
+            ):
+                if c.source == "C" and c.chapter == chapter and c.section == section:
+                    return c
+            return None
+    return None
+
+
+def _is_platform_intent(message: str, top: SourceChunk | None) -> bool:
+    """平台意图：C 块命中，且（非膳食问 或 含平台强语义词）。"""
+    if not (top and top.source == "C"):
+        return False
+    if not is_dietary_domain(message or ""):
+        return True
+    return any(w in (message or "") for w in _PLATFORM_STRONG_WORDS)
 
 
 def _platform_reply_prefix(message: str) -> tuple[str | None, SourceChunk | None]:
@@ -1107,9 +1236,13 @@ def _platform_reply_prefix(message: str) -> tuple[str | None, SourceChunk | None
     「5.2 渠道合作」或「4.1 案例」块），返回 (前缀文本, 命中的 C 块)；未命中平台
     咨询返回 (None, None)。top_k=8：价目表块（C 2.1 个人用户服务）在 BM25 中常排
     6-9 位，top_k=3 会取不到导致答非所问。
+    第七波：章节直选优先（联系→6.1、价目表→2.1、企业→2.2），BM25 不可靠。
     """
     if not any(h in (message or "") for h in _PLATFORM_HINTS):
         return None, None
+    direct = _c_chunk_for_query(message)
+    if direct:
+        return f"【平台服务】{direct.content.strip()[:200]}…", direct
     chunks = list(get_retriever().retrieve(message, top_k=8, current_query=message))
     c_chunks = [c for c in chunks if c.source == "C"]
     if not c_chunks:
@@ -1424,7 +1557,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         or (_detect_goal(message_scan) == "调理")
     )
 
-    chunks = get_retriever().retrieve(ctx_query, top_k=4, current_query=message)
+    chunks = get_retriever().retrieve(ctx_query, top_k=8, current_query=message)
 
     reply = ""
     intent = "nutrition_qa"
@@ -1617,7 +1750,22 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             # 无检索命中，或命中了检索块但用户问题不属于膳食领域（如「大龙虾吃什么」是
             # 动物习性、「世界首富是谁」是常识）→ 走闲聊分支，绝不硬套无关知识块。
             top = _pick_reply_chunk(chunks, message) if chunks else None
-            is_platform = bool(top and top.source == "C")
+            is_platform = _is_platform_intent(message, top)
+            if not is_platform and top and top.source == "C":
+                # 第七波：膳食问法被 BM25 侥幸选到 C 平台块（「官网买的鸡胸肉能吃吗」
+                # 曾答到 4.1 案例、「会员能喝鸡汤吗」曾答到 2.1 服务）→ 排除 C 块
+                # 重选 A/B 膳食块，避免平台内容混入膳食问答。
+                top = (
+                    _pick_reply_chunk([c for c in chunks if c.source != "C"], message)
+                    if chunks else None
+                )
+            # 第七波：平台问法章节直选（联系→6.1/价目表→2.1/企业→2.2），
+            # BM25 选块不可靠（「客服电话」曾答到 4.2 企业案例）。
+            # 仅在 is_platform 确认后应用。
+            if is_platform:
+                direct = _c_chunk_for_query(message)
+                if direct:
+                    top = direct
             in_domain = is_platform or is_dietary_domain(message)
             if not chunks or not in_domain:
                 # 无检索命中 / 非膳食领域：闲聊/客套绝不外挂来源分块（外部审查发现：
@@ -1631,7 +1779,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         "我很乐意为您解答。"
                     )
                     intent = "medication_refuse"
-                elif is_disease_query(strip_disease_negations(message)):
+                elif _is_disease_answer_path(message):
                     # 终极压测：孕期/慢病问法无检索命中时不得落「帮不上忙」闲聊——
                     # 给通用疾病膳食原则（「怀孕3个月生鱼片能不能吃」此前答非所问）。
                     reply = _disease_local_reply(message)
@@ -1670,6 +1818,14 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 # 否则「司美格鲁肽减肥」扩展命中减脂块后 intent 会误标成 nutrition_qa）。
                 if is_med_query:
                     intent = "medication_refuse"
+                elif is_platform and not any(
+                    w in (message or "") for w in _PLATFORM_STRONG_WORDS
+                ) and _usage_guide_reply(message):
+                    # 第七波：功能用法问（「这个软件的会员怎么用」）优先引导，
+                    # 不答案例/服务块（platform 分支此前覆盖 usage_guide）。
+                    reply = _usage_guide_reply(message)
+                    intent = "usage_guide"
+                    sources = []
                 else:
                     intent = "platform" if is_platform else "nutrition_qa"
                 # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
@@ -1702,11 +1858,13 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             f"【{top.chapter} · {top.section}】\n{snippet}"
                         )
                     else:
-                        if is_disease_query(strip_disease_negations(message)):
+                        if _is_disease_answer_path(message):
                             # 暴风雪回归：疾病问法 local-rules 兜底不引无关知识块
                             # （「脂肪肝…早餐吃什么」曾引到增肌方案块）——知识库无该
                             # 疾病内容时给通用疾病膳食原则，避免答非所问。
-                            # 注意用否定剥离后的消息：「我没有糖尿病」不得触发此分支。
+                            # 注意用否定剥离后的消息：「我没有糖尿病」不得触发此分支；
+                            # 第七波：纯目标词（控糖/稳糖）问法走检索（4.3 控糖餐盘），
+                            # 不落疾病通用回复（「燕麦…哪个更适合控糖」要答 GI 对比）。
                             if is_platform:
                                 # 终极压测：平台+疾病混合意图（「SaaS年费15万…痛风
                                 # 能喝浓鸡汤吗」）→ 平台段与疾病段都答，互不覆盖。
@@ -1718,17 +1876,23 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             else:
                                 reply = _disease_local_reply(message)
                         else:
-                            reply = f"【{top.chapter} · {top.section}】\n{snippet}"
-                            # 终极压测：平台咨询中的夸大承诺前提（保证月瘦/随便吃）
-                            # → 追加热量缺口纠偏，杜绝给商业承诺背书。
-                            if is_platform and any(
-                                w in (message or "") for w in ("保证", "月瘦", "随便吃", "躺着瘦", "不运动")
+                            if _portion_question_reply(message):
+                                # 第七波：份量问（「鸡蛋推荐吃几个」）不整表直出——
+                                # 给引导话术（local-rules 无个性化计算）。
+                                reply = _portion_question_reply(message)
+                                intent = "nutrition_qa"
+                                sources = []
+                            else:
+                                reply = f"【{top.chapter} · {top.section}】\n{snippet}"
+                            # 终极压测：夸大承诺前提（保证月瘦/随便吃瘦/躺着瘦）→
+                            # 追加热量缺口纠偏，杜绝给商业承诺背书（不限于 platform）。
+                            if any(
+                                w in (message or "") for w in ("保证月瘦", "月瘦", "月减", "随便吃也能瘦", "躺着瘦", "躺着就能瘦")
                             ):
                                 reply += (
-                                    "\n\n⚠️ 需要说明：专业服务提供的是膳食规划与陪伴，"
-                                    "不是「保瘦」承诺。科学减脂的核心仍是**热量缺口**"
-                                    "（摄入 < 消耗）+ 均衡营养，任何服务都无法替代"
-                                    "「管住嘴、迈开腿」的基本盘。"
+                                    "\n\n⚠️ 需要说明：科学减脂的核心仍是**热量缺口**"
+                                    "（摄入 < 消耗）+ 均衡营养，不存在「躺着瘦」的捷径；"
+                                    "专业服务提供的是膳食规划与陪伴，不是「保瘦」承诺。"
                                 )
 
     # P2 画像持久化：过敏全集写回 session + 隐含人群目标动态更新

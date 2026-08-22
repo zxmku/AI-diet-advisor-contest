@@ -352,15 +352,18 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
 def _extract_food(prefix: str) -> str:
     """从指标词前的前缀里剔除疑问/停用词与指标词，得到食材 token。"""
     p = prefix
+    # 先剥复合问句/噪声词（必须在 _QUERY_STOP 之前：否则「是」会先把「是不是」
+    # 拆成「不」残渣，junk 再也匹配不到）。第七波：补「是不是/会不会/该/太/少吃」。
+    for junk in ("是不是", "会不会", "总共", "提供", "大概", "大约", "一个",
+                 "该", "太", "少吃", "多吃", "适量"):
+        p = p.replace(junk, "")
     for st in sorted(_QUERY_STOP, key=len, reverse=True):
         p = p.replace(st, "")
     for m in sorted(_METRICS, key=len, reverse=True):
         p = p.replace(m, "")
-    # 终极压测（考官下套）：市斤量词（「一斤去皮生鸡胸肉」）与计算问噪声词剥离，
-    # 否则提取串尾部带垃圾（「…总共提供大」）导致表内 key 子串提取失效。
-    p = re.sub(r"[一二两三四五六七八九十]+\s*斤", "", p)
-    for junk in ("总共", "提供", "大概", "大约", "一个"):
-        p = p.replace(junk, "")
+    # 终极压测（考官下套）：市斤量词（「一斤去皮生鸡胸肉」）剥离——
+    # 第七波：斤正则补「半」（与 _jin_scale 的 半斤=2.5 一致）。
+    p = re.sub(r"[一二两三四五六七八九十半]+\s*斤", "", p)
     p = re.sub(r"[\s，。、？！,.;:：（）()\[\]【】\"'“”]", "", p)
     return p.strip()
 
