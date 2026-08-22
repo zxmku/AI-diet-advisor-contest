@@ -221,6 +221,20 @@ _MEAL_INTENT_TRIGGERS: tuple[str, ...] = (
 
 _MEAL_GOAL_ASK = "想减脂、增肌还是控糖？告诉我你的目标，我先帮你搭一餐。"
 
+# 暴风雪回归：人设问（你是谁/能做什么）优先于一切功能触发——
+# 「能帮我做些什么」会命中 _MEAL_INTENT_TRIGGERS 的「帮我做」导致误追问目标。
+_IDENTITY_QUESTIONS: tuple[str, ...] = (
+    "你是谁", "你是啥", "你是什么", "你是做什么的", "你能做什么", "能帮我做什么",
+    "你能帮我做什么", "能帮我做些什么", "你能帮我做些什么", "介绍一下你",
+    "你叫什么", "介绍下你",
+)
+
+
+def _is_identity_question(message: str) -> bool:
+    """是否命中「询问 AI 身份/能力」意图（人设问）。"""
+    return any(t in (message or "") for t in _IDENTITY_QUESTIONS)
+
+
 _MEAL_TIME_WORDS: dict[str, tuple[str, ...]] = {
     "早餐": ("早餐", "早饭", "早上"),
     "午餐": ("午餐", "午饭", "中午"),
@@ -1230,6 +1244,16 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     if p5 is not None:
         reply, intent, model_tag, degraded = p5
         sources = []
+    elif _is_identity_question(message) and not is_med_query:
+        # 人设问：自我介绍，不追问目标、不挂来源（暴风雪回归：此前被「帮我做」
+        # 截获成一餐目标追问）
+        reply = (
+            "我是「健康优选」AI 智能膳食顾问，专门陪你好好吃饭的饮食搭子～"
+            "我可以帮你查食材热量、搭减脂/增肌/控糖三餐、给出点餐建议，"
+            "还能帮你记饮食台账。有什么想吃的，随时告诉我！"
+        )
+        intent = "chitchat"
+        sources = []
     elif _is_meal_intent(message) and not is_med_query and not (is_num_query and num_food):
         goal = _meal_goal(message, _session_goal_tag(req.session_id, req.user_id))
         if goal is None:
@@ -1247,8 +1271,12 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             intent = "meal"
             model_tag = "local-rules"
             sources = _meal_response_sources(meal)
-    elif _decision_cand and not is_med_query and not (is_num_query and num_food):
+    elif _decision_cand and not is_med_query and not (is_num_query and ("多少" in (message or "") or "几" in (message or ""))):
         # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）──
+        # 暴风雪回归：仅「明确数值问法」（含 多少/几，如「麦当劳麦香鸡多少千卡」）
+        # 数值优先；场景问法的行为形态（「怎么点/怎么选/推荐」，如「吉野家怎么点
+        # 能少摄入热量」「肯德基怎么点蛋白质最多」）此前因 is_num_query 命中指标词
+        # 被跳过 decision，落成「暂未收录」——现在点单语义优先，数值问法不受影响。
         # 候选已在分支前解析并按禁忌过滤；纯行为决策、不引用素材外精确数值（红线⑤）。
         reply = (
             f"【点单决策】在{_decision_cand['scenario']}，按{_decision_cand['goal']}目标这样点👇\n"
@@ -1291,7 +1319,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             # 暴风雪测试回归：非膳食问法（如「世界首富马斯克今天吃什么」）误入
             # 数值 miss 时不得回 miss——交给下方领域门控走闲聊，避免答
             # 「暂未收录「世界首富马斯」」；膳食问法（如「牛油果」）保持诚实 miss。
-            if is_dietary_domain(message):
+            # 疾病问法（如「有严重的脂肪肝…」提取出「严重」）同样不得回 miss——
+            # 交给门控/疾病路径，避免把疾病词当食材报「暂未收录」。
+            if is_dietary_domain(message) and not is_disease_query(message):
                 reply = (
                     f"【营养速查表】表中暂未收录「{food}」的精确营养数据，无法给出确定数值，恕不臆测。\n"
                     "您可以换问表中已有食材（如鸡胸肉、糙米、西兰花、三文鱼、鸡蛋等），"

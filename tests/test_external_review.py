@@ -127,3 +127,29 @@ def test_negation_normal_sugar_not_guide(client):
         "user_id": "u", "session_id": "bz_neg", "message": "我没有糖尿病，血糖一切正常，给我推荐个减脂食谱"}).json()["data"]
     assert "结合您的控糖需求" not in str(d.get("reply") or ""), "否定句不得贴控糖引导"
     assert "血糖" not in str(d.get("reply") or "")[:20], "回复开头不应提血糖"
+
+
+# ═══ 暴风雪压力测试第二波回归（QA 复核发现：点单路由/疾病截获/人设问）═══
+
+def test_decision_not_hijacked_by_numeric_words(client):
+    """「吉野家怎么点能少摄入点热量」→ 点单决策优先（此前含指标词被数值 miss 截获）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_gy", "message": "在吉野家吃牛肉饭，怎么点能少摄入点热量？"}).json()["data"]
+    assert d["intent"] == "decision", f"应点单决策，实际 {d['intent']}"
+    assert "暂未收录" not in str(d.get("reply") or "")
+
+
+def test_disease_not_numeric_miss(client):
+    """「有严重的脂肪肝…早餐吃什么」→ 疾病问法不得被数值提取成「严重」报 miss。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_fat", "message": "有严重的脂肪肝，平时早餐吃什么能改善？"}).json()["data"]
+    assert "暂未收录" not in str(d.get("reply") or ""), "疾病问法不得报暂未收录"
+    assert d["intent"] not in ("nutrition_lookup_miss",)
+
+
+def test_identity_question_not_meal_ask(client):
+    """「你到底是谁？能帮我做些什么？」→ 人设问自我介绍，不得被「帮我做」截获成一餐追问。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_who", "message": "你到底是谁？能帮我做些什么？"}).json()["data"]
+    assert d["intent"] == "chitchat", f"应自我介绍，实际 {d['intent']}"
+    assert "膳食顾问" in str(d.get("reply") or "")
