@@ -1278,7 +1278,7 @@ def _handle_companion(
             session_id=req.session_id,
             user_id=req.user_id,
             excluded_foods=excluded or None,
-            state_context=health_state.build_state_context(req.user_id),
+            state_context=health_state.build_state_context(req.user_id) + "\n" + _llm_user_context(req, excluded),
         )
         if llm_reply:
             return llm_reply, config.DEEPSEEK_MODEL, False
@@ -1998,7 +1998,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 history=_recent_chat_turns(req.session_id, 4),
                 session_id=req.session_id, user_id=req.user_id,
                 excluded_foods=excluded or None,
-                state_context=health_state.build_state_context(req.user_id),
+                state_context=health_state.build_state_context(req.user_id) + "\n" + _llm_user_context(req, excluded),
             )
             if _llm:
                 reply = _llm
@@ -2045,7 +2045,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         history=_recent_chat_turns(req.session_id, 4),
                         session_id=req.session_id, user_id=req.user_id,
                         excluded_foods=excluded or None,
-                        state_context=health_state.build_state_context(req.user_id),
+                        state_context=health_state.build_state_context(req.user_id) + "\n" + _llm_user_context(req, excluded),
                     )
                     if _llm:
                         reply = _llm
@@ -2159,7 +2159,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             session_id=req.session_id,
                             user_id=req.user_id,
                             excluded_foods=excluded or None,
-                            state_context=health_state.build_state_context(req.user_id),
+                            state_context=health_state.build_state_context(req.user_id) + "\n" + _llm_user_context(req, excluded),
                         )
                     if llm_reply:
                         reply = llm_reply
@@ -2197,7 +2197,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         session_id=req.session_id,
                         user_id=req.user_id,
                         excluded_foods=excluded or None,
-                        state_context=health_state.build_state_context(req.user_id),
+                        state_context=health_state.build_state_context(req.user_id) + "\n" + _llm_user_context(req, excluded),
                     )
                     if llm_reply:
                         reply = llm_reply
@@ -2620,6 +2620,38 @@ async def tts(req: TTSRequest):
 
 # ── P0 用户档案聚合（记忆模块：只读展示，零写库、零合规豁免） ──
 _PROFILE_MEAL_TAGS = ("早餐", "午餐", "晚餐")
+
+
+_GOAL_LABEL_MAP = {"减脂": "减脂塑形", "增肌": "增肌强化", "调理": "慢病调理"}
+_PROFILE_FIELD_LABELS = (
+    ("nickname", "称呼"),
+    ("pregnancy", "身体状态"),
+    ("taste", "口味"),
+    ("meal_style", "主食偏好"),
+    ("exercise", "运动"),
+)
+
+
+def _llm_user_context(req: ChatRequest, excluded: list[str]) -> str:
+    """组装注入 LLM 的用户画像上下文（目标 + 禁忌 + AI 自动档案）。
+
+    目的：让大模型「记得用户」——减脂还是增肌、对什么过敏、怀孕/口味/运动等，
+    据此润色出个性化回答（产品定位：记忆型饮食搭子）。
+    红线边界：仅作为「人设上下文」注入，不参与任何合规判定（免责/拒药仍由
+    compliance 层确定性决定），不新增免免责/免拒药通道。
+    """
+    parts: list[str] = []
+    goal = _session_goal_tag(req.session_id, req.user_id)
+    if goal:
+        parts.append(f"用户目标：{_GOAL_LABEL_MAP.get(goal, goal)}")
+    if excluded:
+        parts.append(f"饮食禁忌：{'、'.join(excluded)}")
+    prof = user_profile.get_profile(req.user_id)
+    for field, label in _PROFILE_FIELD_LABELS:
+        val = (prof or {}).get(field)
+        if val:
+            parts.append(f"{label}：{val}")
+    return "；".join(parts)
 
 
 def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:

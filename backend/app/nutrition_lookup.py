@@ -100,6 +100,12 @@ _METHOD_HINTS: tuple[str, ...] = (
     "够吗", "多少才", "需要多少", "每天吃多少", "吃多少", "做法",
 )
 
+# 非食材词：提取出的 food 若含这些词，说明是「热量控制/方案建议」问法（如
+# 「减脂期每天热量控制多少」），不是单一食材查表 → 放行检索/LLM 答方案。
+_NON_FOOD_HINTS: tuple[str, ...] = (
+    "减脂", "增肌", "控糖", "调理", "每天", "每日", "控制", "应该", "需要", "摄入",
+)
+
 NUTRITION_TABLE: dict[str, dict] = {}
 _SECTION_CONTENT: dict[str, str] = {}
 
@@ -334,6 +340,9 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
             return (False, None)
     # 提取结果含连接词（和/与/及）→ 疑似多食材，放行通用检索
     if any(cw in food for cw in ("和", "与", "及")):
+        return (False, None)
+    # 提取结果含非食材词（减脂/每天/控制…）→ 「热量控制/方案建议」问法，非单一食材查表
+    if any(w in food for w in _NON_FOOD_HINTS):
         return (False, None)
     # 终极压测：方法/计算问法（怎么吃/怎么补/摄入量）不是「查表」语义 → 放行检索。
     # 用整句 q 检查——「…蛋白质怎么补够」的「补够」在指标词之后，提取串里看不到。
