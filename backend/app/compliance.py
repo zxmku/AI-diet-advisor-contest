@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
-
 from app.config import KNOWLEDGE_DIR
 
 # 标准免责文案（合同 2.1 / 蓝图 8.5 逐字要求）

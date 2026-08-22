@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from jieba import lcut
 from rank_bm25 import BM25Okapi
