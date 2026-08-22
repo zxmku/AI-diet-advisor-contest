@@ -29,6 +29,51 @@ PLATFORM_HINTS = (
 )
 
 
+def _load_synonyms() -> dict[str, list[str]]:
+    """从 knowledge/synonyms.json 构建「词 → 扩展词列表」映射（文本级查询扩展）。
+
+    「降糖」→ [控糖, 稳糖]、「鸡脯肉」→ [鸡胸肉]：提升 BM25 对标准表述知识块的命中。
+    失败时返回空映射，同义词扩展停用（不影响基础检索）。
+    """
+    path = KNOWLEDGE_DIR / "synonyms.json"
+    mapping: dict[str, list[str]] = {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for group in data.get("synonyms", []):
+            canon = group.get("canonical", "")
+            aliases = group.get("aliases", [])
+            if not canon:
+                continue
+            all_terms = list(dict.fromkeys([canon] + aliases))  # 去重保序
+            for term in all_terms:
+                for t in all_terms:
+                    if t != term:
+                        mapping.setdefault(term, []).append(t)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("synonyms.json 加载失败，同义词扩展停用")
+    return mapping
+
+
+_SYNONYMS: dict[str, list[str]] = _load_synonyms()
+
+
+def _expand_query(query: str) -> str:
+    """文本级查询扩展：query 中出现同义词（≥2 字）时，追加其标准词家族。
+
+    设计要点：在**原始文本**上做子串匹配（而非分词后 token 匹配）——jieba 会把
+    「鸡脯肉」切成「鸡脯/肉」，token 级扩展匹配不上，文本级不受分词影响。
+    """
+    if not _SYNONYMS or not query:
+        return query
+    extra: list[str] = []
+    for term, expansions in _SYNONYMS.items():
+        if len(term) >= 2 and term in query:
+            extra.extend(expansions)
+    if not extra:
+        return query
+    return query + " " + " ".join(dict.fromkeys(extra))
+
+
 def _load_chunks(source_id: str, filename: str) -> list[dict]:
     path = KNOWLEDGE_DIR / filename
     if not path.is_file():
@@ -80,7 +125,9 @@ class Retriever:
         返回按相关度降序的 SourceChunk 列表（含 score）。
         """
         results: list[SourceChunk] = []
-        q_tokens = _tokenize(query)
+        # 同义词查询扩展只作用于 A/B 知识域；C 库闸门仍用原始 current_query/query，
+        # 避免「会员」等平台词被同义词追加干扰闸门判断。
+        q_tokens = _tokenize(_expand_query(query))
         if self.bm25 and q_tokens:
             scores = self.bm25.get_scores(q_tokens)
             top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]

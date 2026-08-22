@@ -104,6 +104,29 @@ def _normalize_food(name: str) -> str:
     return s.strip()
 
 
+def _load_synonym_aliases() -> dict[str, str]:
+    """从 knowledge/synonyms.json 构建「别名 → 标准名」映射（数值查询归一用）。
+
+    用户问「鸡脯肉多少千卡」时，查表前把别名归一成标准名「鸡胸肉」→ 命中 165 权威值，
+    而不是诚实回退「未收录」。加载失败返回空映射，数值查询行为不受影响。
+    """
+    mapping: dict[str, str] = {}
+    path = _KNOWLEDGE_DIR / "synonyms.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for group in data.get("synonyms", []):
+            canon = group.get("canonical", "")
+            for alias in group.get("aliases", []):
+                if canon and alias and alias != canon:
+                    mapping[alias] = canon
+    except (OSError, json.JSONDecodeError):
+        logger.warning("synonyms.json 加载失败（数值同义词归一停用）")
+    return mapping
+
+
+_SYNONYM_ALIASES: dict[str, str] = _load_synonym_aliases()
+
+
 def _to_number(value: str) -> float | int | None:
     """把单元格文本转成数值；空/非数字返回 None。整型源存 int，带小数点存 float。"""
     s = (value or "").strip()
@@ -257,6 +280,7 @@ def _extract_food(prefix: str) -> str:
 def lookup(food: str) -> dict | None:
     """按归一化食材名做包含匹配（query⊆key 或 key⊆query），返回首个命中行。
 
+    直接查不到时做同义词归一（「鸡脯肉」→「鸡胸肉」），让数值分支也吃同义词。
     返回行含：key/display_name/source_chapter/source_section 及全部解析字段。
     """
     q = _normalize_food(food)
@@ -265,6 +289,12 @@ def lookup(food: str) -> dict | None:
     for key, row in NUTRITION_TABLE.items():
         if q in key or key in q:
             return row
+    # 同义词归一：别名 → 标准名（「鸡脯肉」→「鸡胸肉」，命中 165 权威值）
+    canon = _SYNONYM_ALIASES.get(q)
+    if canon:
+        for key, row in NUTRITION_TABLE.items():
+            if canon in key or key in canon:
+                return row
     return None
 
 

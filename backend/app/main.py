@@ -1100,7 +1100,12 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         reply = _chitchat_local_reply(message)
                         intent = "chitchat"
             else:
-                intent = "platform" if is_platform else "nutrition_qa"
+                # 用药类问题：即使检索到膳食参考块，意图标签也必须是拒药（红线语义一致，
+                # 否则「司美格鲁肽减肥」扩展命中减脂块后 intent 会误标成 nutrition_qa）。
+                if is_med_query:
+                    intent = "medication_refuse"
+                else:
+                    intent = "platform" if is_platform else "nutrition_qa"
                 # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
                 # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
                 used_llm = False
