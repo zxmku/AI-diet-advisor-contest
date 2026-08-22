@@ -373,3 +373,33 @@ def test_p5_companion_model_labeling(client, monkeypatch):
     assert body2["meta"]["model"] == "local-rules"
     assert body2["meta"]["degraded"] is True
     assert "我陪你" in body2["data"]["reply"]
+
+
+def test_p5_companion_mood_caught(client):
+    """支柱B 加固：口语情绪（心情好差/被骂）须进陪伴分支，降级态也接住情绪，
+    不得落 _chitchat 兜底的『帮不上忙』。"""
+    r = _chat(client, "今天心情好差，工作被骂了，好想喝全糖奶茶吃炸鸡暴饮暴食",
+              session_id="p5mood", user_id="u_p5mood")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] == "companion", f"情绪未进陪伴: {body['data']['reply'][:80]}"
+    assert body["data"]["reply"], "陪伴回复为空"
+    assert "帮不上忙" not in body["data"]["reply"], "情绪场景被打成『帮不上忙』"
+
+
+def test_p5_companion_explicit_request(client):
+    """支柱B 加固：明确的陪伴请求（陪我聊聊天）须进 companion。"""
+    r = _chat(client, "陪我聊聊天呗", session_id="p5chat", user_id="u_p5chat")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] == "companion", f"陪伴请求未进 companion: {body['data']['reply'][:80]}"
+    assert body["data"]["reply"]
+
+
+def test_p5_companion_substring_safe(client):
+    """支柱B 加固（C3 子串安全）：裸『聊天』不得误触发陪伴——
+    『我的聊天记录在哪里』不应进 companion（只含裸『聊天』，未加进触发词）。"""
+    r = _chat(client, "我的聊天记录在哪里", session_id="p5sub", user_id="u_p5sub")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["intent"] != "companion", f"裸『聊天』误触发陪伴: {body['data']['reply'][:80]}"
