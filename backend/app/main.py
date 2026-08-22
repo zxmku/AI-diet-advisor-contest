@@ -692,6 +692,30 @@ def _companion_local_reply(req: ChatRequest, excluded: list[str]) -> str:
     )
 
 
+# 问候/情感触发词：本地降级（无 LLM）时区分闲聊话术，避免「你好」也回「抱歉没找到」的生硬感。
+_GREETING_TRIGGERS = (
+    "你好", "您好", "嗨", "哈喽", "在吗", "早上好", "下午好", "晚上好", "早安", "晚安",
+    "hello", "hi",
+)
+_EMOTION_TRIGGERS = ("想你", "爱你", "喜欢你", "抱抱", "亲亲", "想哭", "委屈", "难过")
+
+
+def _chitchat_local_reply(message: str) -> str:
+    """本地闲聊兜底（无 LLM 时）：区分问候/情感/其他，告别一律「抱歉没找到」。"""
+    text = message or ""
+    if any(t in text for t in _GREETING_TRIGGERS):
+        return (
+            "你好呀！我是你的 AI 膳食顾问小优 👋 减脂、增肌还是慢病调理，"
+            "或者直接告诉我「今晚想吃什么」，我帮你搭一餐～"
+        )
+    if any(t in text for t in _EMOTION_TRIGGERS):
+        return "我也在呢～有我在，一个人也要好好吃饭。想聊聊今天吃什么，还是单纯想找人说说话？"
+    return (
+        "这个我可能帮不上忙，我主要擅长膳食营养（减脂 / 增肌 / 慢病调理）。"
+        "要不要换个角度，聊聊你今天想吃什么、怎么吃更健康？"
+    )
+
+
 def _handle_companion(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
 ) -> tuple[str, str, bool]:
@@ -1073,10 +1097,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         degraded = False
                         intent = "chitchat"
                     else:
-                        reply = (
-                            "抱歉，我暂时没有在膳食知识库中找到与您问题直接相关的内容。"
-                            "您可以换个说法，或告诉我您更关注减脂 / 增肌 / 慢病调理中的哪一类？"
-                        )
+                        reply = _chitchat_local_reply(message)
                         intent = "chitchat"
             else:
                 intent = "platform" if is_platform else "nutrition_qa"
