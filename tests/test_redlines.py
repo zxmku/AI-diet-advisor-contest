@@ -114,6 +114,22 @@ def test_r3_chat_body_free_of_seafood_qa_scenario(client):
     )
 
 
+def test_redaction_mark_collapse():
+    """P2 打磨回归：连续剔除标记应折叠为一个，避免「（已按禁忌剔除）/（已按禁忌剔除）」观感。"""
+    from app.main import _collapse_redaction_marks
+
+    assert (
+        _collapse_redaction_marks("（已按禁忌剔除）/（已按禁忌剔除）（已按禁忌剔除）比目鱼")
+        == "（已按禁忌剔除）比目鱼"
+    )
+    assert (
+        _collapse_redaction_marks("（已按禁忌剔除）（已按禁忌剔除）肉（已按禁忌剔除）")
+        == "（已按禁忌剔除）肉（已按禁忌剔除）"
+    )
+    # 单个标记不误伤
+    assert _collapse_redaction_marks("鸡胸肉（已按禁忌剔除）") == "鸡胸肉（已按禁忌剔除）"
+
+
 def test_r4_medication_refuse_ibuprofen(client):
     """BUG-3 回归：布洛芬咨询必须拒答 + 携带免责声明。"""
     r = _chat(client, "我可以吃布洛芬吗", session_id="r4", user_id="u4")

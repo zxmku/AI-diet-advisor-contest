@@ -298,6 +298,15 @@ def _is_food_excluded(food: str, excluded_set: set[str]) -> bool:
     return False
 
 
+_REDACT_MARK = "（已按禁忌剔除）"
+_REDACT_RUN = re.compile(r"（已按禁忌剔除）(?:[、/，,]*（已按禁忌剔除）)+")
+
+
+def _collapse_redaction_marks(text: str) -> str:
+    """折叠连续的剔除标记（可被 、/，, 分隔），避免「（已按禁忌剔除）/（已按禁忌剔除）」观感。"""
+    return _REDACT_RUN.sub(_REDACT_MARK, text)
+
+
 def _meal_method(
     goal: str,
     protein_food: str | None,
@@ -1112,7 +1121,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         # 红线②「禁忌必排除」：先剔除原回复正文中出现的禁忌食材（长名优先，
         # 避免短名替换破坏长名）。
         for f in sorted(excluded, key=len, reverse=True):
-            reply = reply.replace(f, "（已按禁忌剔除）")
+            reply = reply.replace(f, _REDACT_MARK)
+        reply = _collapse_redaction_marks(reply)
 
     if new_allergies:
         follow_up_parts = [
@@ -1188,7 +1198,8 @@ def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
     # 长名优先替换，避免短名替换破坏长名。
     if excl:
         for f in sorted(excl, key=len, reverse=True):
-            reason = reason.replace(f, "（已按禁忌剔除）")
+            reason = reason.replace(f, _REDACT_MARK)
+        reason = _collapse_redaction_marks(reason)
     plan = {
         "name": base["name"],
         "kcal_range": base["kcal_range"],
