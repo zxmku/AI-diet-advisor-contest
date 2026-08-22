@@ -39,10 +39,10 @@ def _new_session(client, session_id, goal_tag="减脂", user_id="u_v10"):
     assert r.status_code == 200
 
 
-# ── V10 裸「药」误报：山药/药膳/药食同源 不拒药 ──────────────
-@pytest.mark.parametrize("msg", ["山药怎么吃", "药膳排骨", "药食同源"])
+# ── V10/V11 裸「药」白名单豁免：山药/药膳/药食同源 不拒药 ──────
+@pytest.mark.parametrize("msg", ["山药怎么吃", "药膳排骨", "药食同源", "山药排骨汤"])
 def test_v10_no_refuse_on_yao_false_positive(client, msg):
-    """含「药」字但非用药咨询：不得拒药（去掉裸「药」关键词）。"""
+    """含「药」字但非用药咨询（白名单豁免）：不得拒药。"""
     body = _chat(client, msg, session_id="v10_ok", user_id="u_v10")
     reply = body["data"]["reply"]
     assert REFUSE_MARK not in reply, f"「{msg}」被误拒药: {reply[:80]}"
@@ -51,12 +51,31 @@ def test_v10_no_refuse_on_yao_false_positive(client, msg):
 
 @pytest.mark.parametrize(
     "msg",
-    ["吃药期间能喝牛奶吗", "我吃了什么药", "减肥药能随便吃吗"],
+    [
+        # V11：口语含药问法（依赖裸「药」命中，R4 红线全覆盖）
+        "喝药期间能喝牛奶吗",
+        "服药期间能喝牛奶吗",
+        "药片能随便吃吗",
+        "药丸能吃吗",
+        "这药能空腹吃吗",
+        "药什么时候吃最好",
+        # V10：组合词问法
+        "吃药期间能喝牛奶吗",
+        "我吃了什么药",
+        "减肥药能随便吃吗",
+        # 无「药」字的药名/英文
+        "布洛芬能吃吗",
+        "在麦当劳吃布洛芬",
+        "用药期间能吃柚子吗",
+    ],
 )
 def test_v10_medication_still_refused(client, msg):
-    """组合词方案：吃药/什么药/减肥药 等问法必须仍拒药。"""
+    """裸「药」恢复后：喝药/服药/药片/药丸/这药/药什么时候 等问法必须仍拒药+免责。"""
     body = _chat(client, msg, session_id="v10_ref", user_id="u_v10")
     assert REFUSE_MARK in body["data"]["reply"], f"「{msg}」未拒答用药"
+    assert body.get("disclaimer") and "不构成医疗建议" in body["disclaimer"], (
+        f"「{msg}」未携带免责声明"
+    )
 
 
 def test_v10_ibuprofen_still_refused(client):
