@@ -601,6 +601,15 @@ _COMPANION_TRIGGERS: tuple[str, ...] = (
     "陪我聊天", "陪我聊", "聊聊天", "陪聊",
 )
 
+# ── P5c 考核评分（当天饮食打分）：触发词 ──
+# 主动触发（用户说「打分/评估/今天吃得怎么样」），不自动打扰。
+# 与记录/查询/陪伴语义互斥（不含「记一下/把…记」「吃了什么/查记录」「心情/陪我」），
+# 也不含任何药品/会员/企业词 → 不与拒药/平台/C 库相互污染（第十节实证）。
+_DIET_SCORE_TRIGGERS: tuple[str, ...] = (
+    "打分", "评分", "评估", "今天吃得怎么样", "今天吃得如何", "吃得怎么样",
+    "给我打个分", "饮食评分", "评价一下我的饮食",
+)
+
 
 def _is_diet_query(message: str) -> bool:
     """是否命中「查询饮食台账」意图。
@@ -630,6 +639,15 @@ def _is_diet_record(message: str) -> bool:
 def _is_companion(message: str) -> bool:
     """是否命中「一人食陪聊/情感陪伴」意图。"""
     return any(t in (message or "") for t in _COMPANION_TRIGGERS)
+
+
+def _is_diet_score(message: str) -> bool:
+    """是否命中「当天饮食考核评分」意图（主动触发，不自动打扰）。
+
+    与记录/查询/陪伴互斥：评分词不含「记一下/把…记」「吃了什么/查记录」
+    「心情/陪我聊」，触发词集彼此不交叠（已在 _DIET_SCORE_TRIGGERS 隔离）。
+    """
+    return any(t in (message or "") for t in _DIET_SCORE_TRIGGERS)
 
 
 def _diet_meal_tag_from_message(message: str) -> str:
@@ -800,6 +818,174 @@ def _handle_diet_query(user_id: str, session_id: str | None) -> str:
         return "你还没有饮食记录哦。告诉我你吃了什么（比如「早餐吃了两个鸡蛋」），我帮你记下来。"
     lines = [f"· {log.meal_tag}：{log.content}" for log in logs]
     return "你最近记了：\n" + "\n".join(lines)
+
+
+def _parse_weight_kg(message: str) -> float | None:
+    """从评分消息解析体重（kg）。支持 kg/公斤/千克（直接）与 斤（×0.5 折算）。
+
+    仅取本轮消息显式声明（「我 70kg」「体重 65 公斤」）；无则返回 None，
+    蛋白维度将标 N/A（不编造体重，红线⑤合规）。
+    """
+    if not message:
+        return None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(公斤|千克|kg|KG|Kg|斤)", message)
+    if not m:
+        return None
+    val = float(m.group(1))
+    return val * 0.5 if m.group(2) == "斤" else val
+
+
+def _diet_score_advice(
+    total_kcal: float, protein_score: float | None, covered: int, weight: float | None, need: float
+) -> str:
+    """按短板给一条温暖、具体、可操作的小建议（真人语气，不端架子）。
+
+    热量高低以个性化需求 need（体重kg×30）为基准，与评分口径一致、不写死区间。
+    """
+    tips: list[str] = []
+    if total_kcal > need * 1.15:
+        tips.append("今天总热量偏高，晚餐可以再清淡一点")
+    elif 0 < total_kcal < need * 0.85:
+        tips.append("吃得有点少，注意别饿着自己，适当加点营养")
+    if weight and protein_score is not None and protein_score < 35:
+        tips.append("蛋白质还可以再补点，加点鸡胸肉、鱼虾或豆制品")
+    if covered < 3:
+        tips.append("三餐尽量均匀分布，别都堆在晚餐")
+    if not tips:
+        tips.append("今天整体不错，继续保持这个节奏")
+    return "；".join(tips) + "。"
+
+
+def _handle_diet_score(req: ChatRequest, message: str, excluded: list[str]) -> str:
+    """考核评分：基于该 user_id 当日 DietLog 台账 + 营养速查表真实值，给当天饮食打结构化分。
+
+    纯规则路径、数据驱动、零 LLM 自由发挥：热量/蛋白数值严格来自素材表真实值 ×
+    份量（红线⑤合规），文案用温暖真人语气模板（红线③合规，非写死单句）。
+    intent=diet_score、meta.model=local-rules、degraded=True（调用方设置）。
+
+    - 热量合理性 40%：全天总热量对比「体重kg×30」估算需求（无体重按默认60kg），
+      落在需求 ±15% 内满分，偏离线性扣分（个性化，50kg/100kg 用户评分不同）；
+    - 蛋白质达标 35%：实际蛋白 ÷ 目标（体重kg×1.2，素材B:17）；需体重，无则 N/A；
+    - 餐次均衡 25%：早/午/晚覆盖数 ÷ 3（加餐/正餐不强制计入）。
+    数值来源全部可溯，绝无 LLM 改写推算。
+    """
+    db = SessionLocal()
+    try:
+        today = datetime.now(timezone.utc).date()
+        logs = (
+            db.query(models.DietLog)
+            .filter(models.DietLog.user_id == req.user_id)
+            .order_by(models.DietLog.created_at.asc())
+            .all()
+        )
+        today_logs = [
+            lg for lg in logs
+            if (lg.created_at or datetime.min.replace(tzinfo=timezone.utc)).date() == today
+        ]
+    except Exception:  # noqa: BLE001
+        logger.exception("饮食评分台账查询失败（非致命，已降级为空）")
+        today_logs = []
+    finally:
+        db.close()
+
+    if not today_logs:
+        return (
+            "你今天还没记饮食哦📝 告诉我你吃了什么（比如「早餐吃了两个鸡蛋、一杯豆浆」），"
+            "我帮你记下来，再给今天的伙食打个分～"
+        )
+
+    # ── 汇总当天食材：热量（速查表真实值×份量）+ 蛋白（归一化 lookup）+ 餐次 ──
+    total_kcal = 0.0
+    protein_sum = 0.0
+    meal_covered: set[str] = set()
+    all_grams: list[int] = []
+    any_unrecognized = False
+    for lg in today_logs:
+        tot, items = _estimate_diet_kcal(lg.content)
+        if tot is not None:
+            total_kcal += tot
+        if not items:
+            any_unrecognized = True
+        for it in items:
+            all_grams.append(it["grams"])
+            # 第十节实证：用归一化 lookup 取 protein（display_name≠key 时仍命中）；
+            # 谷薯类/无 protein 字段 → None，跳过（不计入蛋白维度，红线⑤约计）。
+            row = nutrition_lookup.lookup(it["food"])
+            if row and row.get("protein") is not None:
+                protein_sum += float(row["protein"]) * it["grams"] / 100
+        if lg.meal_tag == "早餐":
+            meal_covered.add("早")
+        elif lg.meal_tag == "午餐":
+            meal_covered.add("午")
+        elif lg.meal_tag == "晚餐":
+            meal_covered.add("晚")
+
+    total_kcal = round(total_kcal, 1)
+    protein_sum = round(protein_sum, 1)
+
+    # ── 体重解析（仅本轮消息；无则蛋白维度 N/A）──
+    weight = _parse_weight_kg(message)
+    protein_score: float | None = None
+    if weight:
+        target = weight * 1.2  # 素材B:17「体重(kg)×1.2克/日」（下限，红线⑤合规）
+        ratio = protein_sum / target if target > 0 else 0.0
+        protein_score = 35.0 if ratio >= 1 else round(35.0 * ratio, 1)
+        protein_line = (
+            f"约 {protein_sum:g} 克，达到目标约 {round(ratio * 100)}%"
+            f"（目标 {target:g} 克，按体重 {weight:g}kg × 1.2 推算）"
+        )
+    else:
+        protein_line = "暂未提供体重，无法精确评估；告诉我「我 XXkg」可得更准的蛋白评分"
+
+    # ── 三维分 ──
+    # 热量需求基准 = 体重kg × 30（无体重按默认 60kg 兜底，与设计稿一致、个性化）
+    need = (weight or 60.0) * 30.0
+    if total_kcal <= 0:
+        heat_score = 0.0
+    elif 0.85 <= total_kcal / need <= 1.15:
+        heat_score = 40.0
+    elif total_kcal / need < 0.85:
+        heat_score = round(40.0 * max(0.0, (total_kcal / need) / 0.85), 1)
+    else:
+        heat_score = round(40.0 * max(0.0, 1.0 - ((total_kcal / need) - 1.15) / 0.85), 1)
+    covered = len(meal_covered)
+    meal_score = round(25.0 * covered / 3.0, 1)
+
+    if protein_score is None:
+        # 蛋白维度不参与，按热量+餐次归一到百分（避免丢失满分语义）
+        total_score = round((heat_score + meal_score) / (40.0 + 25.0) * 100.0)
+    else:
+        total_score = round(heat_score + protein_score + meal_score)
+
+    # ── 文案（模板化，温暖真人语气）──
+    heat_desc = (
+        "落在合理区间👍" if heat_score >= 40
+        else ("略偏低，注意别饿着自己" if total_kcal < need * 0.85 else "略偏高，注意控制总热量")
+    )
+    meal_desc = (
+        "早/午/晚都照顾到了，均衡 👍" if covered == 3
+        else f"覆盖了 {covered} 餐，建议别都堆在一顿"
+    )
+    advice = _diet_score_advice(total_kcal, protein_score, covered, weight, need)
+
+    lines = [
+        f"你今天的伙食我打 {total_score} 分（百分制）📊",
+        f"· 热量：约 {total_kcal:g} 千卡（目标约 {need:g}{'' if weight else '·默认60kg估算'}），{heat_desc}",
+        f"· 蛋白质：{protein_line}",
+        f"· 餐次：{meal_desc}",
+        f"小建议：{advice}",
+    ]
+    notes: list[str] = []
+    if any_unrecognized:
+        notes.append("部分食材未能精确识别，评分仅供参考")
+    # 红线⑤约计：份量按 100g 常见份量估算时明示（用户显式写克数则不标常见份量）
+    if not all_grams or all(g == 100 for g in all_grams):
+        notes.append("按常见份量 100g 估算，仅供参考")
+    else:
+        notes.append("按你提到的份量估算，仅供参考")
+    if notes:
+        lines.append("（" + "；".join(notes) + "）")
+    return "\n".join(lines)
 
 
 def _companion_local_reply(req: ChatRequest, excluded: list[str]) -> str:
@@ -1086,6 +1272,8 @@ def _try_p5_intent(
     if _is_companion(message):
         reply, model_tag, degraded = _handle_companion(req, message, excluded, recent)
         return reply, "companion", model_tag, degraded
+    if _is_diet_score(message):
+        return _handle_diet_score(req, message, excluded), "diet_score", "local-rules", True
     return None
 
 
