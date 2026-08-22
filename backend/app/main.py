@@ -4,7 +4,7 @@
 - 回答 = BM25 检索素材 A/B 原文块（零编造、带来源标注）；
 - 合规层（compliance.py）硬注入医疗免责 + 拒答用药 + 禁忌排除；
 - 多轮对话落库（MOD-04），history 真实可读；
-- 推荐/快捷基于素材 B 真实方案生成理由（无「接口联调中」占位）；
+- 推荐/快捷基于素材 B 真实方案生成理由（真实可读，非示意文案）；
 - P3 一餐生成：命中一餐意图（晚餐/今晚/给我做…）时由 _build_meal 确定性出餐——
   数值（热量/蛋白/碳水/克数）仅来自营养速查表真实值 × 份量，绝不编造，天然剔除禁忌；
 - P5 饮食管理 + 情感陪伴：命中记录/查询/陪伴意图时互斥优先返回——记录（我吃了…）落
@@ -318,11 +318,11 @@ def _collapse_redaction_marks(text: str) -> str:
 def _redact_excluded(text: str, excluded: Sequence[str]) -> str:
     """R3 禁忌剔除：剔除回复正文中的禁忌食材名（长名优先，避免短名替换破坏长名）。
 
-    V04 修复：剔除前先把「...」引号内容临时占位（\\x1fQ<随机>N\\x1f 标记），剔除完成后再还原——
+    V04 修复：剔除前先把「...」引号内容临时保护（\\x1fQ<随机>N\\x1f 标记），剔除完成后再还原——
     否则「表中暂未收录『坚果』」这类引号内的食材名会被替换成「（已按禁忌剔除）」，
     造成「『（已按禁忌剔除）』的精确营养数据」文本损坏。
-    遗留①加固：占位符用 C0 控制符 \\x1f + 随机串（validate_message 已剥离用户消息中的
-    C0 控制符；即便绕过入口，随机串也使伪造占位符无法命中），杜绝引号内容错位。
+    遗留①加固：引号保护标记用 C0 控制符 \\x1f + 随机串（validate_message 已剥离用户消息中的
+    C0 控制符；即便绕过入口，随机串也使伪造标记无法命中），杜绝引号内容错位。
     """
     protected: dict[str, str] = {}
 
@@ -1289,7 +1289,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # 「（已按禁忌剔除）」乱码）；排除提示仍追加在最终 reply 尾部（追问之后）。
     if excluded:
         # 红线②「禁忌必排除」：先剔除原回复正文中出现的禁忌食材
-        # （长名优先 + 「...」引号内容占位保护，V04）。
+        # （长名优先 + 「...」引号内容保护，V04）。
         reply = _redact_excluded(reply, excluded)
 
     if new_allergies:
@@ -1349,7 +1349,7 @@ def _first_sentence(text: str) -> str:
 
 
 def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
-    """基于素材 B 检索生成真实推荐（去占位文案），并按禁忌排除食材。"""
+    """基于素材 B 检索生成真实推荐（非示意文案），并按禁忌排除食材。"""
     base = _GOAL_PLAN_MAP.get(goal) or _GOAL_PLAN_MAP["减脂"]
     chunks = get_retriever().retrieve(f"{goal} 饮食计划 营养素目标 推荐食材", top_k=6)
     kw = _GOAL_CHAPTER_KW.get(goal, goal)
@@ -1363,7 +1363,7 @@ def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
     foods = [f for f in base["foods"] if f not in excluded_foods(allergy_ids)]
     excl = [f for f in base["foods"] if f in excluded_foods(allergy_ids)]
     # 红线②「禁忌必排除」：推荐理由（来自素材 B 检索块）若含禁忌食材同样剔除
-    # （长名优先 + 「...」引号内容占位保护，V04）。
+    # （长名优先 + 「...」引号内容保护，V04）。
     if excl:
         reason = _redact_excluded(reason, excl)
     plan = {

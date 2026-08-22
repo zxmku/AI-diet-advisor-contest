@@ -206,15 +206,15 @@ async def main() -> int:
             f"messages={len(body['data']['messages'])}",
         )
 
-        # 5.5 推荐去占位（无「接口联调中」）
+        # 5.5 推荐非示意文案
         r = await client.post(
             "/api/recommend", json={"user_id": "u_rec", "session_id": "srec", "goal_tag": "减脂"}
         )
         body = r.json()
         check(
-            "红线·推荐无占位文案",
+            "红线·推荐非示意文案",
             r.status_code == 200
-            and "接口联调中" not in body["data"]["plans"][0]["reason"],
+            and "联调中" not in body["data"]["plans"][0]["reason"],
             f"reason={body['data']['plans'][0]['reason'][:50]!r}",
         )
 

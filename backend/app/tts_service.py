@@ -27,7 +27,7 @@ def tts_available() -> bool:
 
 
 def _clean_text(text: str) -> str:
-    """去除 markdown 标记与剔除占位符，让语音念起来自然。"""
+    """去除 markdown 标记与剔除提示性文案，让语音念起来自然。"""
     return (
         (text or "")
         .replace("**", "")

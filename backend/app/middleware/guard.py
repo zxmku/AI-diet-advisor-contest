@@ -41,8 +41,8 @@ class InputViolation(Exception):
         self.user_message = user_message
 
 
-# C0 控制符（\x00-\x1f，保留 \n 换行）剥离正则：防用户注入伪造 R3 占位符/控制字符。
-# 遗留①加固：main.py _redact_excluded 的引号占位符为 \x1fQ<随机串>:N\x1f（C0 控制符+随机串），
+# C0 控制符（\x00-\x1f，保留 \n 换行）剥离正则：防用户注入伪造 R3 引号保护标记/控制字符。
+# 遗留①加固：main.py _redact_excluded 的引号保护标记为 \x1fQ<随机串>:N\x1f（C0 控制符+随机串），
 # 若用户消息可携带 C0 控制符则可能造成引号内容错位（纯观感）；此处统一在入口剥离，双保险。
 _C0_CONTROL_RE = re.compile(r"[\x00-\x09\x0b-\x1f]")
 
@@ -57,7 +57,7 @@ def validate_message(text: str | None) -> str:
         InputViolation: 空输入或超长，携带指定提示语。
     """
     cleaned = (text or "").strip()
-    # 遗留①加固：剥离 C0 控制符（\x00-\x1f，保留 \n 换行），防伪造占位符/控制字符注入。
+    # 遗留①加固：剥离 C0 控制符（\x00-\x1f，保留 \n 换行），防伪造引号保护标记/控制字符注入。
     cleaned = _C0_CONTROL_RE.sub("", cleaned)
     if not cleaned:
         raise InputViolation(MSG_EMPTY_INPUT)

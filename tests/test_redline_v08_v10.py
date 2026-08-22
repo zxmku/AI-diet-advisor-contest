@@ -3,7 +3,7 @@
 覆盖：
 - V10 裸「药」误报：「山药/药膳/药食同源」不拒药；「吃药期间能喝牛奶吗/我吃了什么药」
   仍拒药（组合词方案不破坏既有拒药）；
-- 遗留① 占位符加固：validate_message 剥离 C0 控制符；_redact_excluded 伪造占位符不可命中；
+- 遗留① 引号保护标记加固：validate_message 剥离 C0 控制符；_redact_excluded 伪造保护标记不可命中；
 - V08 一餐触发词补全：「晚上吃什么/中午吃什么」在有目标会话中出餐；问候「晚上好」不被劫持；
 - V09 领域门控补 GI：「低GI食物有哪些」不再漏判成闲聊。
 
@@ -84,7 +84,7 @@ def test_v10_ibuprofen_still_refused(client):
     assert REFUSE_MARK in body["data"]["reply"]
 
 
-# ── 遗留① 占位符加固 ────────────────────────────────────
+# ── 遗留① 引号保护标记加固 ────────────────────────────────────
 def test_validate_message_strips_c0_controls():
     """validate_message 剥离 C0 控制符（\x00-\x1f，保留 \n）。"""
     from app.middleware.guard import validate_message
@@ -95,10 +95,10 @@ def test_validate_message_strips_c0_controls():
 
 
 def test_redact_excluded_fake_placeholder_not_hit():
-    """伪造占位符（旧格式 \x00qN\x00 / 新格式 \x1fQN\x1f）不得命中引号占位。"""
+    """伪造保护标记（旧格式 \x00qN\x00 / 新格式 \x1fQN\x1f）不得命中引号保护。"""
     from app.main import _redact_excluded
 
-    # 伪造占位符文本 + 真实引号内容：引号内食材名保持原样、无剔除损坏标记。
+    # 伪造保护标记文本 + 真实引号内容：引号内食材名保持原样、无剔除损坏标记。
     for fake in ("\x00q0\x00", "\x1fQ0\x1f", "\x1fQdeadbeef:0\x1f"):
         out = _redact_excluded(f"「坚果」的热量 {fake}", ["坚果"])
         assert "「坚果」" in out, f"引号内容被破坏: {out!r}"
