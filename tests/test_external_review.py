@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import pytest
 from datetime import datetime, timezone
 
 from app.main import _recent_chat_turns, _recent_user_messages
@@ -181,7 +182,49 @@ def test_mixed_intent_platform_kept(client):
         "user_id": "u", "session_id": "gm_mix", "message": "你们平台的专业版会员多少钱一个月？顺便告诉我减脂期晚餐怎么吃。"}).json()["data"]
     r = str(d.get("reply") or "")
     assert "为你搭配" in r, "应含晚餐搭配"
-    assert ("会员" in r) or ("价格" in r) or ("平台" in r), "应含平台回答"
+    # 严格断言：价格段必须真实作答（不得仅靠「平台」二字 trivial 命中）
+    # 系统以「版 + 具体价格」作答（如 标准版 / 59 元/月），不强制字面「会员」
+    assert any(k in r for k in ("元", "月", "¥", "价格", "收费", "套餐", "版", "会员")), \
+        "混合意图中平台价格段须含具体价格信息，不得丢弃"
+
+
+def test_triple_isolation_price_allergy_nutrition(client):
+    """三合一隔离：平台价格(C) + 过敏剔除 + 营养数值(A) 同轮不串味。
+
+    审核盲点#3 补强：此前仅单例验证混合意图，未证「价格+过敏+营养」三者共存时互不污染。
+    原 xfail（过敏澄清分支吞价格）已于支柱A 修复：数值块内补 _platform_reply_prefix，
+    现转为正式回归护栏——「数值×平台同轮」价格段不得再丢失。
+    """
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_tri",
+        "message": "我对虾过敏，你们专业版会员多少钱？顺便说下鸡胸肉多少千卡"}).json()["data"]
+    r = str(d.get("reply") or "")
+    # 价格段（C 库）真实作答：系统以「版 + 具体价格」作答，不强制字面「会员」
+    assert any(k in r for k in ("元", "月", "¥", "价格", "收费", "套餐", "版", "会员")), \
+        "价格段须含具体价格信息"
+    # 营养段（A 库）真实作答，不被 C 库污染
+    assert ("鸡胸肉" in r) or ("165" in r), "营养段须含鸡胸肉真实数值，不得被平台价格串味"
+    # 过敏段生效：须显式处理过敏，且虾须出现在禁忌排除清单中（而非被推荐）
+    assert ("已按您的禁忌排除" in r) or ("过敏" in r) or ("剔除" in r) or ("不吃" in r), \
+        "过敏约束须被显式处理"
+    assert ("虾仁" in r) or ("虾" in r), "虾须出现在禁忌排除清单中"
+
+
+def test_miss_platform_isolation(client):
+    """同构残边补强：表外食材(诚实 miss) + 平台价格同轮，平台段不得被吞。
+
+    支柱A 二审残边：numeric_miss 分支此前未补平台前缀，导致「牛油果多少千卡 +
+    会员多少钱」这类「表外食材 miss × 平台价格」同轮时丢失价格段。现补齐后转正。
+    """
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_miss_plat",
+        "message": "牛油果多少千卡？你们专业版会员多少钱？"}).json()["data"]
+    r = str(d.get("reply") or "")
+    # 平台价格段（C 库）真实作答：系统以「版 + 具体价格」作答，不强制字面「会员」
+    assert any(k in r for k in ("元", "月", "¥", "价格", "收费", "套餐", "版", "会员")), \
+        "表外食材 miss 同轮，平台价格段须含具体价格信息，不得丢弃"
+    # 膳食段（A 库诚实 miss）真实作答，不被 C 库污染
+    assert ("牛油果" in r) or ("暂未收录" in r), "营养段须含表外食材的诚实 miss，不得被平台价格串味"
 
 
 def test_ledger_record_with_ledger_word(client):

@@ -1721,6 +1721,19 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     "score": None,
                 }]
                 numeric_hit = True
+                # 支柱A 加固：数值问答命中时若同轮含平台咨询（会员/价格…），
+                # 须追加 C 库平台前缀（语义隔离的 _platform_reply_prefix），
+                # 不得因数值分支跳过下方平台处理块导致价格被吞
+                # （「数值×平台」同轮此前丢失价格段，是审核发现的真缺口）。
+                plat_prefix, plat_chunk = _platform_reply_prefix(message)
+                if plat_prefix:
+                    reply = f"{plat_prefix}\n\n{reply}"
+                    if plat_chunk:
+                        sources = sources + [{"source": plat_chunk.source,
+                                              "chapter": plat_chunk.chapter,
+                                              "section": plat_chunk.section,
+                                              "content": plat_chunk.content,
+                                              "score": plat_chunk.score}]
             else:
                 # 仅当候选名「像食材」（≥2 字且含中文）时才走诚实告知分支。
                 # is_numeric_lookup_query 把裸「g」「卡」也当指标词，会从
@@ -1742,6 +1755,18 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 )
                 intent = "nutrition_lookup_miss"
                 sources = []
+                # 支柱A 同构加固：表外食材(诚实 miss) + 平台价格同轮时，平台段也须保留，
+                # 不得因 numeric_miss 分支跳过下方平台处理块导致价格被吞
+                # （与 numeric_hit 分支同构，补齐多意图平台保留的完整覆盖）。
+                plat_prefix, plat_chunk = _platform_reply_prefix(message)
+                if plat_prefix:
+                    reply = f"{plat_prefix}\n\n{reply}"
+                    if plat_chunk:
+                        sources = sources + [{"source": plat_chunk.source,
+                                              "chapter": plat_chunk.chapter,
+                                              "section": plat_chunk.section,
+                                              "content": plat_chunk.content,
+                                              "score": plat_chunk.score}]
             else:
                 numeric_miss = False
 
