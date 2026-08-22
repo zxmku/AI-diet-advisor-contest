@@ -163,3 +163,52 @@ def test_disease_meal_trigger_not_plan_template(client):
     r = str(d.get("reply") or "")
     assert "增肌" not in r and "热量盈余" not in r, "疾病问法不得给增肌方案"
     assert ("脂肪肝" in r) or ("控油" in r) or ("控糖" in r), "应给疾病针对性建议"
+
+
+# ═══ Gemini 外部审查回归（漏洞 1-6：对比句式/混合意图/台账裸词/减重词/台账同义词/调理免责）═══
+
+def test_compare_food_not_weird_miss(client):
+    """对比句式（西红柿和黄瓜…各是多少）不得拼成假食材报「暂未收录」。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_cmp", "message": "西红柿和黄瓜每100克热量各是多少？"}).json()["data"]
+    assert "暂未收录" not in str(d.get("reply") or ""), "对比句式不得报怪异 miss"
+    assert d["intent"] != "nutrition_lookup_miss"
+
+
+def test_mixed_intent_platform_kept(client):
+    """混合意图：平台价格 + 晚餐搭配 两段都答，不丢弃平台咨询。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_mix", "message": "你们平台的专业版会员多少钱一个月？顺便告诉我减脂期晚餐怎么吃。"}).json()["data"]
+    r = str(d.get("reply") or "")
+    assert "为你搭配" in r, "应含晚餐搭配"
+    assert ("会员" in r) or ("价格" in r) or ("平台" in r), "应含平台回答"
+
+
+def test_ledger_record_with_ledger_word(client):
+    """「帮我记一笔台账：吃了两个鸡蛋」→ 记录（裸「台账」不再误判查询）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_led", "message": "帮我记一笔台账：吃了两个鸡蛋"}).json()["data"]
+    assert d["intent"] == "diet_record", f"应记录，实际 {d['intent']}"
+
+
+def test_goal_weight_loss_phrase(client):
+    """「我想减重」→ 识别为减脂目标（此前漏「想减重」词）。"""
+    from app.main import _detect_goal
+    assert _detect_goal("我想减重，给我推荐个方案") == "减脂"
+
+
+def test_ledger_kcal_synonym(client):
+    """台账估算接入同义词（西红柿→番茄/地瓜→红薯）→ 有数字估算。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_kcal", "message": "帮我记一下：中午吃了西红柿炒鸡蛋和两块地瓜"}).json()["data"]
+    r = str(d.get("reply") or "")
+    assert any(ch.isdigit() for ch in r), "台账估算应含数字（同义词归一后命中速查表）"
+
+
+def test_care_goal_disclaimer(client):
+    """会话目标=调理（稳糖）时，常规问答必须带免责。"""
+    c = client
+    c.post("/api/chat", json={"user_id": "u", "session_id": "gm_care", "message": "我要调理血糖"})
+    r = c.post("/api/chat", json={
+        "user_id": "u", "session_id": "gm_care", "message": "推荐一份早餐搭配"}).json()
+    assert r.get("disclaimer"), "调理会话常规问答必须带免责"

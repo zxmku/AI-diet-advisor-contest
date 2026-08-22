@@ -178,6 +178,7 @@ _PERSONAL_PRONOUNS: tuple[str, ...] = ("我的", "本人")
 _HEALTH_STATE_PHRASES: tuple[str, ...] = (
     "血糖高", "血糖偏高", "高血糖", "糖尿病", "三高", "血压高", "尿酸高",
     "减肥中", "瘦身中", "在减肥", "想减肥", "想减脂", "在减脂", "要减脂",
+    "想减重", "在减重", "要减重", "减重中", "想降体重",
     "想增肌", "在增肌", "增肌中", "想控糖",
 )
 
@@ -561,10 +562,14 @@ _DIET_RECORD_TRIGGERS: tuple[str, ...] = (
     "我吃了", "今天吃了", "吃了", "记录一下", "记一下", "帮我记", "帮我记录", "记一笔", "加餐",
 )
 # 查询触发词：问「吃了什么/饮食记录」等。必须优先于记录判定（「我最近吃了什么」含「吃了」）。
+# 暴风雪/Gemini 审查回归：裸「台账」不是查询语义——「帮我记一笔台账」是记录动作，
+# 会被裸「台账」误判成查询；查询必须带明确动词（吃了什么/查台账/查看记录/历史饮食）。
 _DIET_QUERY_TRIGGERS: tuple[str, ...] = (
     "吃了什么", "吃了啥", "饮食记录", "最近吃什么", "我吃了什么", "我吃了啥",
-    "记了什么", "台账",
+    "记了什么", "查台账", "查看记录", "历史饮食",
 )
+# 记录触发词补充：记录台账/记台账（与查询触发词解耦）
+_DIET_RECORD_TRIGGERS_EXTRA: tuple[str, ...] = ("记台账", "记录台账")
 # 问句/求方案语义：命中则不当作记录（如「帮我记一下今天吃什么」是求建议，不是记台账）。
 _MEAL_REQUEST_HINTS: tuple[str, ...] = (
     "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么吃", "安排",
@@ -589,7 +594,8 @@ def _is_diet_record(message: str) -> bool:
         return False
     if any(h in text for h in _MEAL_REQUEST_HINTS):
         return False
-    return any(t in text for t in _DIET_RECORD_TRIGGERS)
+    return any(t in text for t in _DIET_RECORD_TRIGGERS) \
+        or any(t in text for t in _DIET_RECORD_TRIGGERS_EXTRA)
 
 
 def _is_companion(message: str) -> bool:
@@ -632,6 +638,11 @@ def _estimate_diet_kcal(message: str) -> tuple[float | None, list[dict]]:
     调用方不显示任何数字。
     """
     text = message or ""
+    # Gemini 审查回归：台账估算接入同义词归一（「西红柿」→「番茄」、「地瓜」→「红薯」），
+    # 否则口语食材名查不到表，估算为 0 或漏算。
+    for alias, canon in nutrition_lookup._SYNONYM_ALIASES.items():
+        if alias in text:
+            text = text.replace(alias, canon)
     matches: list[tuple[str, int, int]] = []
     for key in sorted(nutrition_lookup.NUTRITION_TABLE, key=len, reverse=True):
         idx = text.find(key)
@@ -1206,6 +1217,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         is_disease_query(message_scan)
         or _session_has_disease(req.session_id)
         or _session_profile_has_disease(req.session_id)
+        # Gemini 审查回归：会话目标为「调理」（稳糖/慢病）时，常规问答同样必须带免责
+        or (_session_goal_tag(req.session_id, req.user_id) == "调理")
     )
 
     chunks = get_retriever().retrieve(ctx_query, top_k=4, current_query=message)
@@ -1290,6 +1303,16 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 f"一餐约 {int(round(meal['total_kcal']))} 千卡"
                 "（热量与营养素均按营养速查表数值计算）。"
             )
+            # Gemini 审查回归（漏洞2）：混合意图——「专业版会员多少钱？顺便…晚餐怎么吃」
+            # 不得丢弃平台商业咨询（素材 C）；追加平台回答，两段都给。
+            if any(h in (message or "") for h in _PLATFORM_HINTS):
+                c_top = next(
+                    (c for c in get_retriever().retrieve(message, top_k=3, current_query=message)
+                     if c.source == "C"),
+                    None,
+                )
+                if c_top:
+                    reply = f"【平台服务】{c_top.content.strip()[:200]}…\n\n【膳食搭配】\n" + reply
             intent = "meal"
             model_tag = "local-rules"
             sources = _meal_response_sources(meal)

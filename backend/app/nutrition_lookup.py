@@ -284,10 +284,18 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     （prefix='多少' → 提取为空），回退对整句剥离停用词/指标词后提取食材；
     仅当提取结果可匹配速查表才判为数值查询，避免「低GI食物有哪些」这类
     碎片（food='低'/'低GI食物哪'）被误判。
+
+    Gemini 审查回归（漏洞1）：双食材对比句式（「三文鱼和鳕鱼相比哪个热量高」
+    「西红柿和黄瓜每100克热量各是多少」）不得把前半句拼成一个假食材查表报
+    「暂未收录「三文鱼鳕鱼相比哪个」」——含对比词时放行给 RAG/LLM 多食材处理。
     """
     if not query:
         return (False, None)
     q = query
+    # 对比句式（多食材比较）：不作为单一精确数值查询拦截
+    if any(cw in q for cw in ("相比", "哪个更", "哪个热量", "哪个蛋白质", "哪个脂肪",
+                              "哪个碳水", "各是多少", "各多少", "分别")):
+        return (False, None)
     metric = None
     for m in sorted(_METRICS, key=len, reverse=True):
         if m.lower() in q.lower():
@@ -302,6 +310,9 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
         food = _extract_food(q)
         if not _is_matchable_food(food):
             return (False, None)
+    # 提取结果含连接词（和/与/及）→ 疑似多食材，放行通用检索
+    if any(cw in food for cw in ("和", "与", "及")):
+        return (False, None)
     return (True, food)
 
 
