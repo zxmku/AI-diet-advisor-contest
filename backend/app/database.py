@@ -50,12 +50,24 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def init_db() -> None:
-    """建表（幂等）。应用启动时调用。"""
+    """建表（幂等）。应用启动时调用。
+
+    含老库平滑升级：SQLite 旧库 users 表没有 profile_json 列（AI 自动维护的
+    用户档案），用幂等 ALTER 补列——列已存在则抛异常被忽略，绝不中断启动。
+    """
     from app import models  # noqa: F401  # 确保四表已注册到 Base.metadata
 
     Base.metadata.create_all(bind=engine)
     if DATABASE_URL.startswith("sqlite"):
         with engine.connect() as conn:
+            try:
+                # 老库升级：users 表补 AI 档案列（新库 create_all 已含该列，
+                # 此处 ALTER 会因列已存在抛错 → 捕获忽略，天然幂等）。
+                conn.exec_driver_sql("ALTER TABLE users ADD COLUMN profile_json TEXT")
+                conn.commit()
+                logger.info("迁移：users 表已补充 profile_json 列（AI 自动维护档案）")
+            except Exception:  # noqa: BLE001  # 列已存在 → 忽略
+                conn.rollback()
             mode = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
         logger.info("SQLite journal_mode=%s（期望 wal）", mode)
 

@@ -1,10 +1,11 @@
 """P0 用户档案（记忆模块）测试：/api/state profile 聚合 + 守卫 1/2 校验。
 
 覆盖：
-- /api/state 返回 profile 结构（identity/preferences/behavior/next_step 键齐全）+
-  taboo_options（前端档案禁忌编辑渲染）；
+- /api/state 返回 profile 结构（identity/preferences/behavior/ai_profile 键齐全，
+  不再返回 next_step——团长：目标切换和下一步建议都去掉）+
+  taboo_options（前端档案渲染）；
 - 建会话 + 声明海鲜过敏 + 记台账 → profile 聚合出 名字/排除食材/坚持天数/最近台账/
-  今日未记录餐次/下一步建议；
+  今日未记录餐次；
 - 守卫1：POST /api/session allergies 含未知 id → 白名单过滤（返回与写库均不含未知 id）；
 - 守卫2：档案疾病（高血压）+ 问布洛芬 → 仍拒药+免责；档案疾病 + 问推荐 → 引导语出现；
 - 红线不破坏：既有 115 用例由全量套件保证。
@@ -48,12 +49,12 @@ def _session_row(session_id: str) -> models.Session | None:
 
 # ── /api/state profile 结构契约 ─────────────────────────
 def test_state_profile_structure(client):
-    """/api/state 返回 profile 四段 + taboo_options（前端渲染所需）。"""
+    """/api/state 返回 profile 三段 + ai_profile + taboo_options（前端渲染所需）。"""
     body = _state(client, "u_prof")
     d = body["data"]
     assert "profile" in d, "/api/state 缺 profile 段"
     prof = d["profile"]
-    assert set(prof.keys()) >= {"identity", "preferences", "behavior", "next_step"}
+    assert set(prof.keys()) >= {"identity", "preferences", "behavior", "ai_profile"}
     assert set(prof["identity"].keys()) >= {"nickname", "since"}
     assert set(prof["preferences"].keys()) >= {
         "goal_tag", "allergy_ids", "allergy_names", "excluded_foods", "disease_labels",
@@ -61,7 +62,6 @@ def test_state_profile_structure(client):
     assert set(prof["behavior"].keys()) >= {
         "streak", "today_meal_count", "week_trend", "recent_meals", "today_missing_meals",
     }
-    assert set(prof["next_step"].keys()) >= {"text", "action"}
     assert isinstance(d["taboo_options"], list)
     ids = {t["id"] for t in d["taboo_options"]}
     assert "seafood_allergy" in ids and "hypertension" in ids
@@ -102,17 +102,16 @@ def test_profile_aggregates_allergy_and_logs(client):
     assert prof["behavior"]["today_meal_count"] >= 1
     assert any("鸡蛋" in m["content"] for m in prof["behavior"]["recent_meals"])
     assert prof["behavior"]["today_missing_meals"], "今日未记录餐次不应为空"
-    # next_step：今天有记录且还差餐 → 建议补记
-    assert "今天还差" in prof["next_step"]["text"]
-    assert prof["next_step"]["action"].startswith("record_")
+    # ai_profile：对话未声明孕期/口味等 → 空档案（键存在，值可为空 dict）
+    assert isinstance(prof["ai_profile"], dict)
 
 
-def test_profile_next_step_build_meal_when_no_log(client):
-    """无任何台账 → 下一步建议为「搭一餐」（build_meal）。"""
+def test_profile_no_next_step(client):
+    """P0 档案聚合不再返回 next_step（团长：目标切换和下一步建议都去掉）。"""
     body = _state(client, "u_prof_empty")
-    step = body["data"]["profile"]["next_step"]
-    assert step["action"] == "build_meal"
-    assert "搭一餐" in step["text"]
+    prof = body["data"]["profile"]
+    assert "next_step" not in prof
+    assert isinstance(prof["ai_profile"], dict)
 
 
 # ── 守卫1：allergies 白名单过滤（未知 id 安全失败） ────────

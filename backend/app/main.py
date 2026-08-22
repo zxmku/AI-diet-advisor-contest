@@ -47,14 +47,16 @@ from app.compliance import (
     is_dietary_domain,
     is_disease_query,
     is_medication_query,
+    strip_disease_negations,
 )
 from app.cost_gate import cost_gate
 from app.database import SessionLocal, init_db
 from app import models
-from app.retrieval import SourceChunk, get_retriever
+from app.retrieval import PLATFORM_HINTS, SourceChunk, get_retriever
 from app import nutrition_lookup
 from app import health_state
 from app import decision_tool
+from app import user_profile
 from app import llm
 from app.middleware.guard import (
     RateLimitMiddleware,
@@ -113,6 +115,11 @@ register_exception_handlers(app)
 @app.get("/health")
 def health() -> dict:
     """健康检查：存活 + 关键配置自检（不回显任何密钥）。"""
+    try:
+        from app import tts_service
+        _tts_ok = tts_service.tts_available()
+    except Exception:  # noqa: BLE001
+        _tts_ok = False
     return {
         "status": "ok",
         "llm_key_set": bool(config.DEEPSEEK_API_KEY),
@@ -123,6 +130,8 @@ def health() -> dict:
         "nutrition_table_rows": nutrition_lookup.nutrition_table_status()["rows"],
         # M17 成本闸门：仅当 LLM 启用时暴露成本状态，未启用为 None。
         "llm_cost": cost_gate.status() if llm.is_enabled() else None,
+        # 语音输出健康状态：edge-tts 可用性（前端指示灯：绿=健康/黑=不健康）。
+        "tts_available": _tts_ok,
     }
 
 
@@ -201,8 +210,10 @@ def _detect_goal(message: str) -> str | None:
 # V08 修复：补 早上吃/中午吃/下午吃/晚上吃（「晚上吃什么」「中午吃什么」此前漏判成闲聊）。
 # 注意用「时段+吃」而非裸时段词：裸「晚上/中午/早上/下午」会把「晚上好」等问候
 # 劫持进一餐追问目标分支（meal_goal_ask），属回归；「时段+吃」精准命中一餐请求。
+# 二审 P1-7：裸「今晚」也从触发词中移除（「今晚天气怎么样」不得劫持成追问目标），
+# 由 _is_meal_intent 的正则「今晚+餐次词同现」接管（今晚吃什么/今晚减脂餐仍命中）。
 _MEAL_INTENT_TRIGGERS: tuple[str, ...] = (
-    "早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "今晚", "夜宵",
+    "早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "夜宵",
     "今天吃什么", "一餐", "一顿", "搭一餐", "做一餐", "做一顿", "来一餐",
     "给我做", "帮我做", "想吃点啥", "吃啥", "吃点啥", "吃什么好",
     "早上吃", "中午吃", "下午吃", "晚上吃",
@@ -267,9 +278,18 @@ _MEAL_METHOD_TEMPLATES: dict[str, list[str]] = {
 
 
 def _is_meal_intent(message: str) -> bool:
-    """是否命中「一餐」意图（晚餐/午餐/早餐/今晚/给我做/想吃点啥 等）。"""
+    """是否命中「一餐」意图（晚餐/午餐/早餐/今晚/给我做/想吃点啥 等）。
+
+    二审 P1-7 修复：裸「今晚」不再直接判一餐——「今晚天气怎么样」「今晚有空吗」
+    等闲聊会被劫持成 meal_goal_ask。改为「今晚」须与餐次词（吃/餐/饭/做/搭/点/
+    宵夜）同现才命中；「今晚减脂餐/今晚吃什么/今晚吃啥」不受影响。
+    """
     text = message or ""
-    return any(t in text for t in _MEAL_INTENT_TRIGGERS)
+    if any(t in text for t in _MEAL_INTENT_TRIGGERS):
+        return True
+    if "今晚" in text and re.search(r"今晚.{0,6}(?:吃|餐|饭|做|搭|点|宵夜)", text):
+        return True
+    return False
 
 
 def _meal_goal(message: str, session_goal: str | None) -> str | None:
@@ -333,6 +353,11 @@ def _redact_excluded(text: str, excluded: Sequence[str]) -> str:
 
     out = _QUOTED_RE.sub(_hold_quoted, text)
     for f in sorted(excluded, key=len, reverse=True):
+        # P0-3 修复：单字排除词（如 egg_allergy 补的「蛋」）不参与正文替换——
+        # 否则「蛋白质」「蛋糕」等含「蛋」字词会被替换成「（已按禁忌剔除）白质」。
+        # 单字词仅用于 _is_food_excluded 的食材匹配（候选名不含「蛋白质」等字样）。
+        if len(f) < 2:
+            continue
         out = out.replace(f, _REDACT_MARK)
     out = _collapse_redaction_marks(out)
     for token, original in protected.items():
@@ -629,6 +654,10 @@ def _handle_diet_record(req: ChatRequest, message: str, excluded: list[str]) -> 
             db.add(user)
             db.flush()
         sess = db.get(models.Session, req.session_id) if req.session_id else None
+        # 二审 P1-2：会话归属校验——session 已存在但属于其他用户时禁止写入台账
+        # （userB 借 userA 的 session_id 不得污染 A 的会话/台账）。
+        if sess is not None and sess.user_id != req.user_id:
+            return "抱歉，会话不存在或无权访问。"
         if sess is None:
             sess = models.Session(
                 id=req.session_id or uuid.uuid4().hex,
@@ -706,7 +735,7 @@ def _companion_local_reply(req: ChatRequest, excluded: list[str]) -> str:
 
     建议里的食材全部来自速查表（P3 生成器保证），不编造数值。
     """
-    goal = _session_goal_tag(req.session_id)
+    goal = _session_goal_tag(req.session_id, req.user_id)
     meal = _build_meal(goal, excluded, "正餐") if goal else None
     if meal is not None:
         foods = "、".join(
@@ -796,8 +825,10 @@ _NUMERIC_HINTS = ("千卡", "卡路里", "卡", "kcal", "热量", "蛋白质", "
 _VALUE_UNITS = ("千卡", "卡路里", "卡", "kcal", "g", "克", "蛋白质", "脂肪", "碳水", "热量")
 # 数值问答里需剔除的疑问/停用词，剩下的实词当作候选食材名
 _NUM_STOP = {"多少", "几", "吃", "吗", "的", "能", "有", "是", "怎么", "如何", "什么", "可以", "想", "要", "该", "这", "那", "我", "你", "它"}
-# 平台/定价类问题优先选自 C 库（平台私有内容），避免被营养块误排（缺陷 A 修复）
-_PLATFORM_HINTS = ("会员", "价格", "多少钱", "收费", "费用", "套餐", "订阅", "平台", "开通", "升级", "付费", "多少钱一个月")
+# 平台/定价类问题优先选自 C 库（平台私有内容），避免被营养块误排（缺陷 A 修复）。
+# 二审 P1-1：统一引用 retrieval.PLATFORM_HINTS（含 收费/开通/升级/付费/定价/企业/SaaS
+# /API/案例/白皮书），消除与检索闸门词表的漂移。
+_PLATFORM_HINTS = PLATFORM_HINTS
 # 定价类问法：在 C 库内部再优先含实际价格信息的块（缺陷 A 修复）
 _PRICE_HINTS = ("多少钱", "价格", "收费", "费用", "报价", "钱", "付费", "套餐")
 
@@ -845,27 +876,41 @@ def _pick_reply_chunk(chunks: Sequence[SourceChunk], query: str) -> SourceChunk 
 
 
 def _session_allergies(user_id: str, session_id: str | None) -> list[str]:
-    """从 DB 读取会话已声明的禁忌（与对话触发、请求声明合并）。"""
+    """从 DB 读取会话已声明的禁忌（与对话触发、请求声明合并）。
+
+    二审 P1-2：会话归属校验——session 已存在但属于其他用户时返回 []，
+    杜绝 userB 借用 userA 的 session_id 继承 A 的禁忌画像。
+    """
     if not session_id:
         return []
     db = SessionLocal()
     try:
         sess = db.get(models.Session, session_id)
-        return list(sess.allergies) if sess else []
+        if sess is None or sess.user_id != user_id:
+            return []
+        return list(sess.allergies)
     except Exception:  # noqa: BLE001
         return []
     finally:
         db.close()
 
 
-def _session_goal_tag(session_id: str | None) -> str | None:
-    """从 DB 读取会话当前人群标签；未设置/异常返回 None。"""
+def _session_goal_tag(session_id: str | None, user_id: str | None = None) -> str | None:
+    """从 DB 读取会话当前人群标签；未设置/异常返回 None。
+
+    二审 P1-2：user_id 非空时做会话归属校验——session 属于其他用户返回 None，
+    杜绝 userB 借用 userA 的 session_id 继承 A 的目标画像。
+    """
     if not session_id:
         return None
     db = SessionLocal()
     try:
         sess = db.get(models.Session, session_id)
-        return sess.goal_tag if sess else None
+        if sess is None:
+            return None
+        if user_id is not None and sess.user_id != user_id:
+            return None
+        return sess.goal_tag
     except Exception:  # noqa: BLE001
         return None
     finally:
@@ -893,13 +938,27 @@ def _recent_user_messages(session_id: str | None, n: int = 2) -> list[str]:
 
 
 def _session_has_disease(session_id: str | None) -> bool:
-    """会话历史中是否曾出现疾病/医疗意图（跨轮延续免责）。"""
+    """会话历史中是否曾出现疾病/医疗意图（跨轮延续免责）。
+
+    二审 P0-5 修复：只扫描 **user** 消息——assistant 回复的素材块原文常含
+    「血糖/糖尿病/三高」等词，全量扫描会把普通增肌用户误判为「控糖用户」，
+    导致次轮无关问题也被贴控糖引导+过度免责（产品记忆错乱）。模型/检索输出
+    永不当用户事实。
+    二审 P1-4：对历史 user 消息同样做否定剥离——「我没有糖尿病」不得记为患病。
+    """
     if not session_id:
         return False
     db = SessionLocal()
     try:
-        msgs = db.query(models.Message).filter(models.Message.session_id == session_id).all()
-        return any(is_disease_query(m.content) for m in msgs)
+        msgs = (
+            db.query(models.Message)
+            .filter(
+                models.Message.session_id == session_id,
+                models.Message.role == "user",
+            )
+            .all()
+        )
+        return any(is_disease_query(strip_disease_negations(m.content)) for m in msgs)
     except Exception:  # noqa: BLE001
         return False
     finally:
@@ -953,19 +1012,25 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
     """
     if not disease:
         return ""
-    texts = [message or ""]
+    texts = [strip_disease_negations(message or "")]
     sess_disease_name: str | None = None
     if session_id:
         db = SessionLocal()
         try:
+            # 二审 P0-5 修复：只扫 user 消息——assistant 回复的素材块原文常含
+            # 「血糖/糖尿病」等词，全量扫描会污染画像（同 _session_has_disease）。
+            # 二审 P1-4：历史 user 消息同样做否定剥离（「我没有糖尿病」不引导）。
             recent = (
                 db.query(models.Message)
-                .filter(models.Message.session_id == session_id)
+                .filter(
+                    models.Message.session_id == session_id,
+                    models.Message.role == "user",
+                )
                 .order_by(models.Message.created_at.desc())
                 .limit(6)
                 .all()
             )
-            texts += [m.content for m in recent]
+            texts += [strip_disease_negations(m.content) for m in recent]
             # 守卫 2：会话画像疾病类禁忌 → 对应引导语标签（档案写入而非对话声明时）
             sess = db.get(models.Session, session_id)
             if sess and sess.allergies:
@@ -1015,6 +1080,9 @@ def _update_session_profile(
             db.add(user)
             db.flush()
         sess = db.get(models.Session, session_id)
+        # 二审 P1-2：会话归属校验——session 已存在但属于其他用户时禁止改写画像。
+        if sess is not None and sess.user_id != user_id:
+            return
         if sess is None:
             sess = models.Session(id=session_id, user_id=user_id, goal_tag=None, allergies=[])
             db.add(sess)
@@ -1050,6 +1118,9 @@ def _persist_turn(
             db.add(user)
             db.flush()
         sess = db.get(models.Session, session_id)
+        # 二审 P1-2：会话归属校验——session 已存在但属于其他用户时禁止落库。
+        if sess is not None and sess.user_id != user_id:
+            return
         if sess is None:
             sess = models.Session(id=session_id, user_id=user_id, goal_tag=None, allergies=[])
             db.add(sess)
@@ -1068,11 +1139,14 @@ def _persist_turn(
 def chat(req: ChatRequest) -> UnifiedResponse:
     """多轮对话：检索 grounding 回答 + 合规层（免责/拒药/禁忌）+ 过敏/目标画像持久化 + 对话落库。"""
     message = validate_message(req.message)
+    # 二审 P1-4：疾病/目标判定用否定剥离后的消息（「我没有糖尿病」「我血糖正常」
+    # 不得误判患病）；落库/检索仍保留原始 message（ctx_query 用原文保证召回）。
+    message_scan = strip_disease_negations(message)
     # 多轮上下文：最近用户消息参与检索；疾病意图跨轮延续免责
     recent = _recent_user_messages(req.session_id, 2)
     ctx_query = " ".join([message] + recent)
     disease = (
-        is_disease_query(message)
+        is_disease_query(message_scan)
         or _session_has_disease(req.session_id)
         or _session_profile_has_disease(req.session_id)
     )
@@ -1106,11 +1180,15 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）：分支前解析并按禁忌过滤，
     # 全部被过滤则候选为 None → 回退常规流程，避免空答复。 ──
     _decision_cand = decision_tool.resolve(
-        message, _meal_goal(message, _session_goal_tag(req.session_id)) or "减脂"
+        message, _meal_goal(message, _session_goal_tag(req.session_id, req.user_id)) or "减脂"
     )
     if _decision_cand and excluded:
+        # P0-3 修复：决策候选按禁忌过滤改用 _is_food_excluded（与 P3 一餐生成器统一，
+        # 双向包含+归一化）。修复前用 `f in it` 弱子串匹配，「白煮蛋×2」不含「鸡蛋」
+        # 子串导致蛋过敏用户仍被推荐白煮蛋（红线②击穿）。
         _decision_cand["items"] = [
-            it for it in _decision_cand["items"] if not any(f in it for f in excluded)
+            it for it in _decision_cand["items"]
+            if not _is_food_excluded(it, set(excluded))
         ]
     if _decision_cand and not _decision_cand["items"]:
         _decision_cand = None
@@ -1128,7 +1206,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         reply, intent, model_tag, degraded = p5
         sources = []
     elif _is_meal_intent(message) and not is_med_query and not (is_num_query and num_food):
-        goal = _meal_goal(message, _session_goal_tag(req.session_id))
+        goal = _meal_goal(message, _session_goal_tag(req.session_id, req.user_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
             reply = _MEAL_GOAL_ASK
@@ -1271,8 +1349,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # （写库放在 _persist_turn 之前；异常不影响主流程）
     if new_allergies:
         _update_session_profile(req.user_id, req.session_id, allergy_ids=list(allergy_ids))
-    detected_goal = _detect_goal(message)
-    if detected_goal and detected_goal != _session_goal_tag(req.session_id):
+    # 二审 P1-4：目标识别用否定剥离后的消息（「我血糖正常，推荐减脂」不得写成调理）
+    detected_goal = _detect_goal(message_scan)
+    if detected_goal and detected_goal != _session_goal_tag(req.session_id, req.user_id):
         _update_session_profile(req.user_id, req.session_id, goal_tag=detected_goal)
 
     # M11 画像感知引导语：疾病用户回复差异化（「结合您的控糖需求，」）——加在正文前，
@@ -1303,8 +1382,26 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             reply = f"{follow_up}\n\n{reply}" if reply else follow_up
 
     if excluded:
-        # 确认排除提示始终保留在 reply 尾部（追问之后），列全清单供用户知晓。
-        reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
+        # P0-3 修复③：排除提示仅在「确有剔除/回避处理」时展示——
+        # ①正文实际剔除了禁忌食材（出现剔除标记）；②一餐生成/点单决策按禁忌
+        # 排除了候选；③本轮首次声明过敏（追问确认）。修复前只要 excluded 非空
+        # 就无条件展示，导致「一边推荐白煮蛋、一边提示已排除鸡蛋」的自相矛盾。
+        was_redacted = _REDACT_MARK in reply
+        if was_redacted or meal is not None or decision is not None or new_allergies:
+            # 确认排除提示保留在 reply 尾部（追问之后），列全清单供用户知晓。
+            reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
+
+    # AI 自动维护用户档案（团长：UI 不可编辑，由 AI 从对话中自动识别写入）：
+    # 规则检测（仅第一人称陈述，问句/第三人称不提取）→ 字段级去重写入
+    # （档案里已有该字段则不覆盖，保留用户先说的；没有才写入）。
+    # 红线：档案只做记录用途——不参与合规判定、不覆盖 allergies/goal_tag、
+    # 不注入 LLM 上下文（守卫 3 保持）；异常不影响主流程。
+    try:
+        _profile_updates = user_profile.detect_user_profile(message)
+        if _profile_updates:
+            user_profile.add_profile_fields(req.user_id, _profile_updates)
+    except Exception:  # noqa: BLE001
+        logger.exception("用户档案自动写入失败（非致命，已跳过）")
 
     _persist_turn(req.user_id, req.session_id, message, reply, [c.model_dump() for c in chunks])
     data: dict = {"reply": reply, "intent": intent, "goal_tag": None}
@@ -1413,11 +1510,15 @@ def quick(req: QuickRequest) -> UnifiedResponse:
         plan["note"] = "今日食谱依据素材 B 7 日循环食谱生成，可循环使用。"
     else:
         plan = _plan_from_goal(goal, list(allergy_ids))
+    # 二审 P0-4（红线②）：控糖（调理）快捷入口此前漏免责（recommend 有、quick 无，
+    # 同一产品两入口合规不一致）；补上与 recommend 一致的免责。
+    disclaimer = DISCLAIMER_STANDARD if goal == "调理" else None
     return make_response(
         {"plans": [plan], "intent": "recommend", "goal_tag": goal},
         sources=get_retriever().retrieve(f"{goal or '减脂'} 饮食计划 营养素目标 推荐食材", top_k=2),
         model="local-rules",
         degraded=True,
+        disclaimer=disclaimer,
     )
 
 
@@ -1533,6 +1634,16 @@ def session_op(req: SessionRequest) -> UnifiedResponse:
             db.flush()
 
         sess = db.get(models.Session, req.session_id) if req.session_id else None
+        # 二审 P1-2：跨用户会话串号防护——userB 不得通过 action=switch 改写
+        # userA 的会话画像（否则可继承/篡改他人禁忌与目标）。
+        if sess is not None and sess.user_id != req.user_id:
+            db.rollback()
+            return make_response(
+                {"error": "会话不存在或无权访问"},
+                sources=[],
+                model="local-rules",
+                degraded=True,
+            )
         if sess is None:
             sess = models.Session(
                 id=req.session_id or uuid.uuid4().hex,
@@ -1595,38 +1706,15 @@ async def tts(req: TTSRequest):
 _PROFILE_MEAL_TAGS = ("早餐", "午餐", "晚餐")
 
 
-def _build_next_step(
-    today_meal_count: int,
-    recorded_tags: set[str],
-    has_any_log: bool,
-    allergy_ids: list[str],
-) -> dict:
-    """P0 下一步建议：简单规则（今天还差某餐 → 无台账搭一餐 → 确认禁忌 → 记一餐）。
-
-    规则刻意从简、可解释：优先补记今天未记录的餐次，其次引导第一餐/确认禁忌。
-    """
-    missing = [t for t in _PROFILE_MEAL_TAGS if t not in recorded_tags]
-    if today_meal_count > 0 and missing:
-        tag = missing[0]
-        action = {
-            "早餐": "record_breakfast",
-            "午餐": "record_lunch",
-            "晚餐": "record_dinner",
-        }[tag]
-        return {"text": f"今天还差{tag}没记，吃完告诉我一声", "action": action}
-    if not has_any_log:
-        return {"text": "还没有饮食记录，让我先帮你搭一餐？", "action": "build_meal"}
-    if allergy_ids:
-        return {"text": "我记着你要避开这些食物，需要调整随时告诉我", "action": "confirm_allergy"}
-    return {"text": "告诉我今天吃了什么，我帮你记下来", "action": "record_meal"}
-
-
 def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
-    """P0 用户档案聚合（记忆模块·只读）：身份 + 偏好 + 行为 + 下一步建议。
+    """P0 用户档案聚合（记忆模块·只读）：身份 + 偏好 + 行为 + AI 自动档案。
 
     全部复用现有数据（users / sessions.allergies+goal_tag / DietLog /
-    health_state / taboo_map），零新表、零 schema 变更；仅展示层反查，
+    health_state / taboo_map / users.profile_json），零新表；仅展示层反查，
     不参与合规判定（守卫 2/3：不新增「档案→免免责/免拒药」通道、自由文本不进 LLM）。
+
+    团长决策：不再返回 next_step（目标切换/下一步建议均去掉）；AI 档案
+    （profile_json）由对话规则检测自动维护，UI 不可编辑，此处只读聚合展示。
     """
     nickname: str | None = None
     since: str | None = None
@@ -1641,8 +1729,12 @@ def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
             if user.created_at is not None:
                 # created_at 存 UTC，本地化到 +8 时区后取自然日
                 since = (user.created_at + timedelta(hours=8)).strftime("%Y-%m-%d")
-        # 会话画像：优先指定 session，其次该用户最近一条会话
+        # 会话画像：优先指定 session，其次该用户最近一条会话。
+        # 二审 P1-2：指定 session 但属于其他用户 → 视为未指定（走该用户最近会话），
+        # userB 不得读取 userA 的档案画像。
         sess = db.get(models.Session, session_id) if session_id else None
+        if sess is not None and sess.user_id != user_id:
+            sess = None
         if sess is None:
             sess = (
                 db.query(models.Session)
@@ -1687,12 +1779,9 @@ def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
     today_summary = health_state.get_today_summary(user_id)
     recorded_tags = {m["meal_tag"] for m in today_summary["meals"]}
     today_missing = [t for t in _PROFILE_MEAL_TAGS if t not in recorded_tags]
-    next_step = _build_next_step(
-        today_meal_count=today_summary["meal_count"],
-        recorded_tags=recorded_tags,
-        has_any_log=bool(recent_meals),
-        allergy_ids=allergy_ids,
-    )
+
+    # AI 自动维护档案（users.profile_json）：只读聚合，供前端展示（用户不可编辑）
+    ai_profile = user_profile.get_profile(user_id)
 
     return {
         "identity": {"nickname": nickname, "since": since},
@@ -1710,7 +1799,7 @@ def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
             "recent_meals": recent_meals,
             "today_missing_meals": today_missing,
         },
-        "next_step": next_step,
+        "ai_profile": ai_profile,
     }
 
 
@@ -1722,8 +1811,9 @@ def health_state_endpoint(
     """健康状态引擎（M2/M3）+ 用户档案聚合（P0 记忆模块）。
 
     返回：连续坚持天数 + 今日饮食总结 + AI 欢迎语（M18）+ 只读 profile
-    （身份/偏好/行为/下一步建议）+ taboo_options（前端档案禁忌编辑渲染）。
+    （身份/偏好/行为/AI 自动档案 ai_profile）+ taboo_options（前端档案渲染）。
     纯只读聚合，不写库；session_id 可选，缺省取该用户最近会话画像。
+    团长决策：不再返回 next_step（目标切换/下一步建议均去掉）。
     """
     return make_response(
         {

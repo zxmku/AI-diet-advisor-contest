@@ -2,7 +2,9 @@
 
 - sessions.allergies 存禁忌 id 的 JSON 数组，每次请求必须加载进合规拦截，不因轮次丢失；
 - messages.sources 存引用溯源 JSON 数组，与统一响应格式的 sources 结构一致；
-- diet_logs（P5）存用户饮食台账（记住吃了什么），meal_tag ∈ 早餐/午餐/晚餐/加餐/正餐。
+- diet_logs（P5）存用户饮食台账（记住吃了什么），meal_tag ∈ 早餐/午餐/晚餐/加餐/正餐；
+- users.profile_json 存 AI 自动维护的用户档案（JSON 字符串：孕期/口味/主食风格/运动量/
+  昵称等），UI 不可编辑，由对话规则检测写入，字段级去重（已有不覆盖）。
 """
 from __future__ import annotations
 
@@ -26,12 +28,19 @@ def _new_uuid() -> str:
 
 
 class User(Base):
-    """用户身份：匿名 ID（前端 localStorage）或昵称。"""
+    """用户身份：匿名 ID（前端 localStorage）或昵称。
+
+    profile_json 存 AI 自动维护的用户档案 JSON 字符串（如
+    ``{"pregnancy":"孕期","taste":"爱吃辣","exercise":"每天跑步","nickname":"小优"}``），
+    由 user_profile.set_profile_field 维护（字段级去重，已有不覆盖）。
+    老库通过 database.init_db 的幂等 ALTER 补列升级。
+    """
 
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_new_uuid)
     nickname: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    profile_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user")
