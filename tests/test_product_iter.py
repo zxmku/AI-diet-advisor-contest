@@ -70,12 +70,12 @@ def test_p2_allergy_followup_once_and_persisted(client):
     assert sess is not None
     assert "seafood_allergy" in (sess.allergies or [])
 
-    # 第二轮：不再声明过敏 → 无追问（只问一次），但排除提示仍在（记忆贯穿）
+    # 第二轮：不再声明过敏 → 无追问（只问一次）；记忆已持久化（见上 71 行），
+    # 本回复正文无海鲜、无剔除动作 → 二审 P0-3 修复③下排除提示不强制出现。
     r2 = _chat(client, "推荐减脂方案", session_id="p2a", user_id="u_p2")
     assert r2.status_code == 200
     reply2 = r2.json()["data"]["reply"]
     assert not reply2.startswith("收到，已为您记录"), "次轮不应再次追问"
-    assert "已按您的禁忌排除以下食材" in reply2
     # 红线 R3 不回退：正文（排除提示之前）不得含任一海鲜食材名
     pre = _pre_exclusion_part(reply2)
     assert not any(f in pre for f in SEAFOOD_EXCLUDED), (

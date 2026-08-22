@@ -9,10 +9,15 @@
 from __future__ import annotations
 
 
-def _chat(client, message, *, session_id):
+def _chat(client, message, *, session_id, user_id="u", allergies=None):
     r = client.post(
         "/api/chat",
-        json={"user_id": "u", "session_id": session_id, "message": message},
+        json={
+            "user_id": user_id,
+            "session_id": session_id,
+            "message": message,
+            "allergies": allergies or [],
+        },
     )
     assert r.status_code == 200
     return r.json()["data"]
@@ -71,3 +76,79 @@ def test_no_disease_no_guide(client):
     for i, msg in enumerate(("鸡胸肉多少千卡", "你好")):
         d = _chat(client, msg, session_id=f"m11_no{i}")
         assert "结合您的" not in d["reply"], f"无疾病用户不应带引导: {msg}"
+
+
+def test_no_disease_no_guide_multiround(client):
+    """二审 P0-5 回归：普通增肌用户次轮不得被误判为「控糖用户」。
+
+    修复前 _session_has_disease/_profile_guide 扫全部消息（含 assistant 回复），
+    assistant 素材块原文含「血糖/糖尿病」→ 普通用户次轮被贴「结合您的控糖需求」
+    + 过度免责（产品记忆错乱）。修复后只扫 user 消息，模型输出永不当用户事实。
+    """
+    _chat(client, "我想增肌", session_id="m11_clean", user_id="u_clean")
+    d = _chat(client, "我在便利店准备点餐", session_id="m11_clean", user_id="u_clean")
+    assert "结合您的控糖需求" not in d["reply"], (
+        f"普通增肌用户次轮被误贴控糖引导: {d['reply'][:60]}"
+    )
+    # 疾病用户跨轮延续不受影响（正向对照）
+    _chat(client, "我有糖尿病", session_id="m11_dm2", user_id="u_dm")
+    d2 = _chat(client, "推荐减脂方案", session_id="m11_dm2", user_id="u_dm")
+    assert "结合您的控糖需求" in d2["reply"], "糖尿病跨轮引导应保留"
+
+
+def test_disease_three_high_meal_has_disclaimer(client):
+    """二审 P0-4（红线②）回归：三高/糖高人群要一餐必须带免责。
+
+    修复前「三高」「糖高」不在 _DISEASE_KEYWORDS → 出稳糖餐却 disclaimer=None。
+    """
+    for i, msg in enumerate(("三高人群午餐", "我糖高早餐吃什么")):
+        r = client.post(
+            "/api/chat",
+            json={"user_id": "u_th", "session_id": f"m11_th{i}", "message": msg},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("disclaimer"), f"「{msg}」出餐未带免责"
+        assert "不构成医疗建议" in body["disclaimer"]
+
+
+def test_quick_control_sugar_has_disclaimer(client):
+    """二审 P0-4（红线②）回归：/api/quick control_sugar 必须带免责。
+
+    修复前 quick 端点漏 disclaimer（recommend(调理) 有、quick 无，两入口不一致）。
+    """
+    r = client.post(
+        "/api/quick",
+        json={"user_id": "u_q", "session_id": "q_cs", "action": "control_sugar"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("disclaimer"), "quick(control_sugar) 未带免责"
+    assert "不构成医疗建议" in body["disclaimer"]
+    # 对照：减脂快捷不带免责
+    r2 = client.post(
+        "/api/quick",
+        json={"user_id": "u_q", "session_id": "q_lf", "action": "lose_fat"},
+    )
+    assert r2.status_code == 200
+    assert r2.json().get("disclaimer") is None
+
+
+def test_cannot_eat_shrimp_next_round_excluded(client):
+    """二审 P0 新增：否定式禁忌声明「我不能吃虾」→ 次轮推荐不得含虾。"""
+    r1 = _chat(client, "我不能吃虾", session_id="m11_shrimp", user_id="u_sh")
+    assert "已为您记录" in r1["reply"], f"「我不能吃虾」应识别为禁忌: {r1['reply'][:60]}"
+    r2 = _chat(client, "推荐减脂方案", session_id="m11_shrimp", user_id="u_sh")
+    assert "虾仁" not in r2["reply"], f"次轮推荐仍含虾: {r2['reply'][:80]}"
+
+
+def test_glp1_refuse_with_disclaimer(client):
+    """二审 P0 新增：GLP-1 别称必须拒药 + 免责。"""
+    r = client.post(
+        "/api/chat",
+        json={"user_id": "u_g", "session_id": "m11_glp", "message": "GLP-1针副作用"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "不提供用药建议" in body["data"]["reply"], "GLP-1 应拒药"
+    assert body.get("disclaimer"), "GLP-1 应带免责"

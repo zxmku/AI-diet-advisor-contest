@@ -140,6 +140,33 @@ def test_decision_allergy_filter():
     assert "牛奶" not in items, f"点单建议不应含禁忌食材: {items}"
 
 
+def test_decision_egg_allergy_filters_boiled_egg():
+    """二审 P0-3（红线②）回归：蛋过敏 + 增肌 + 便利店点单不得再推荐「白煮蛋×2」。
+
+    修复前决策过滤用 `f in it` 弱子串匹配（「鸡蛋」not in「白煮蛋×2」），
+    蛋过敏用户仍被推荐白煮蛋，正文尾部却提示「已排除鸡蛋」自相矛盾。
+    """
+    from app.main import app
+
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/chat",
+            json={
+                "user_id": "u",
+                "session_id": "s_egg",
+                "message": "在便利店，准备点餐，我想增肌",
+                "allergies": ["egg_allergy"],
+            },
+        )
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["intent"] == "decision"
+    items = d["decision"]["items"]
+    assert not any("白煮蛋" in it or "蛋" in it for it in items), (
+        f"蛋过敏点单建议仍含蛋类: {items}"
+    )
+
+
 def test_decision_not_hijack_numeric_and_chat(monkeypatch):
     """QA MEDIUM/LOW 回归：数值问答不被决策劫持；闲聊/抱怨不误触发决策。
 

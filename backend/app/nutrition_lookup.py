@@ -80,6 +80,11 @@ _QUERY_STOP: set[str] = {
     "可以", "想", "要", "该", "这", "那", "我", "你", "它", "一个", "了", "啊",
     "呢", "呀", "请问", "问", "下", "一下", "知道", "了解", "查询", "查", "告诉",
     "看", "啥", "些", "里", "中", "上", "对", "为", "与", "和", "及", "或",
+    # 餐次/时段词（R1 回归）：「晚餐鸡胸肉多少千卡」的 prefix 含「晚餐」，
+    # 若不剥离则精确匹配后 food='晚餐鸡胸肉' → 诚实 miss（回归）。餐次词不
+    # 是食材名的一部分，安全剥离。
+    "晚餐", "午餐", "早餐", "晚饭", "午饭", "早饭", "今晚", "夜宵", "宵夜",
+    "加餐", "早上", "中午", "晚上", "下午",
 }
 
 NUTRITION_TABLE: dict[str, dict] = {}
@@ -242,11 +247,38 @@ def _load() -> None:
 _load()
 
 
+def _is_matchable_food(food: str) -> bool:
+    """整句回退提取的食材是否「可匹配」速查表（用于数值查询判定，防碎片误判）。
+
+    判断依据（宽松包含即可，最终命中由 lookup 的精确匹配把关）：
+    - 与某表 key 精确相等；
+    - 或经同义词归一后精确相等；
+    - 或含某表 key（如「鸡胸肉沙拉」提取为复合 token，最终 lookup 精确 miss
+      会走诚实回退，绝不误答成单品数值）。
+    """
+    if not food or len(food) < 2:
+        return False
+    if food in NUTRITION_TABLE:
+        return True
+    canon = _SYNONYM_ALIASES.get(food)
+    if canon and canon in NUTRITION_TABLE:
+        return True
+    for key in NUTRITION_TABLE:
+        if key in food or food in key:
+            return True
+    return False
+
+
 def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     """判断是否为「<食材> 多少/几 <营养指标>」数值查询。
 
     指标词 ∈ {千卡,卡路里,卡,kcal,热量,蛋白质,脂肪,碳水,克,g}。
     命中则返回 (True, 食材token)；否则 (False, None)。
+
+    L10 修复：指标词前置（「多少克鸡胸肉」）时，指标词之前的片段只剩疑问词
+    （prefix='多少' → 提取为空），回退对整句剥离停用词/指标词后提取食材；
+    仅当提取结果可匹配速查表才判为数值查询，避免「低GI食物有哪些」这类
+    碎片（food='低'/'低GI食物哪'）被误判。
     """
     if not query:
         return (False, None)
@@ -262,7 +294,9 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     prefix = q[:idx]
     food = _extract_food(prefix)
     if not food:
-        return (False, None)
+        food = _extract_food(q)
+        if not _is_matchable_food(food):
+            return (False, None)
     return (True, food)
 
 
@@ -278,23 +312,31 @@ def _extract_food(prefix: str) -> str:
 
 
 def lookup(food: str) -> dict | None:
-    """按归一化食材名做包含匹配（query⊆key 或 key⊆query），返回首个命中行。
+    """按归一化食材名做**精确匹配**（L4/L5 修复：禁止 `key in q` 反向包含）。
 
-    直接查不到时做同义词归一（「鸡脯肉」→「鸡胸肉」），让数值分支也吃同义词。
-    返回行含：key/display_name/source_chapter/source_section 及全部解析字段。
+    修复前 `q in key or key in q` 的双向子串匹配会误伤：
+    - 单字/泛指词（「鸡」「牛」「鱼」「蛋」「奶」「麦」「虾」）错配成速查表
+      首个含该字的食材（红线⑤：数值必须只引用素材原文）；
+    - 整道菜/复合食品名（「鸡胸肉沙拉」「牛奶巧克力」）误命中单品并直接输出
+      单品数值，不提示这是单品而非整菜。
+
+    修复后：
+    - 长度 < 2 的单字/泛指词直接返回 None（走诚实 miss/BM25 回退）；
+    - 仅接受精确 key 匹配，未命中走同义词归一（「鸡脯肉」→「鸡胸肉」）后再
+      精确匹配；其余一律返回 None，绝不跨词命中。
     """
     q = _normalize_food(food)
-    if not q:
+    if not q or len(q) < 2:
         return None
-    for key, row in NUTRITION_TABLE.items():
-        if q in key or key in q:
-            return row
+    row = NUTRITION_TABLE.get(q)
+    if row:
+        return row
     # 同义词归一：别名 → 标准名（「鸡脯肉」→「鸡胸肉」，命中 165 权威值）
     canon = _SYNONYM_ALIASES.get(q)
     if canon:
-        for key, row in NUTRITION_TABLE.items():
-            if canon in key or key in canon:
-                return row
+        row = NUTRITION_TABLE.get(canon)
+        if row:
+            return row
     return None
 
 

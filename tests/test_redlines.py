@@ -80,7 +80,7 @@ def _pre_exclusion_part(reply: str) -> str:
 
 
 def test_r3_chat_reply_notes_exclusion(client):
-    """禁忌必排除：对话回复正文不得含禁忌食材，末尾出现排除提示清单。"""
+    """禁忌必排除：对话回复正文不得含禁忌食材；确有剔除/回避处理时末尾出现排除提示。"""
     r = _chat(
         client,
         "推荐减脂方案",
@@ -90,11 +90,14 @@ def test_r3_chat_reply_notes_exclusion(client):
     )
     assert r.status_code == 200
     reply = r.json()["data"]["reply"]
-    assert "已按您的禁忌排除以下食材" in reply
-    assert any(f in reply for f in SEAFOOD_EXCLUDED)
     # 正文（提示之前）必须干净：不得出现任一海鲜食材名。
     pre = _pre_exclusion_part(reply)
     assert not any(f in pre for f in SEAFOOD_EXCLUDED)
+    # 二审 P0-3 修复③：排除提示仅在确有剔除/回避处理时展示（消除「一边排除一边
+    # 推荐」矛盾）。本条回复正文无海鲜、无剔除动作 → 不强制要求提示存在；
+    # 若正文确实出现剔除标记，则提示必须存在。
+    if "（已按禁忌剔除）" in pre:
+        assert "已按您的禁忌排除以下食材" in reply
 
 
 def test_r3_chat_body_free_of_seafood_qa_scenario(client):
@@ -156,6 +159,44 @@ def test_r5_numeric_lookup_no_hallucination(client):
     body = r.json()
     assert body["data"]["intent"] == "nutrition_lookup"
     assert "165" in body["data"]["reply"]
+
+
+def test_r5_single_char_food_not_misassigned(client):
+    """二审 P0-2（红线⑤）回归：单字/泛指词不得错配成速查表精确数值。
+
+    修复前 lookup 的 `q in key or key in q` 把「鸡多少千卡」以 nutrition_lookup
+    意图直接答「鸡胸肉 165 千卡」。修复后单字词不命中精确数值表（走 BM25 检索/
+    诚实回退）；BM25 原文若含鸡胸肉数值属合理营养知识，不算误答。
+    """
+    for i, msg in enumerate(("鸡多少千卡", "牛多少千卡", "鱼多少千卡", "蛋多少千卡")):
+        r = _chat(client, msg, session_id=f"r5s{i}", user_id="u5")
+        assert r.status_code == 200
+        d = r.json()["data"]
+        assert d["intent"] != "nutrition_lookup", f"单字词不得命中精确数值表: {msg} → {d['intent']}"
+        # 防精确表值格式（format_reply 的「每100克可食部约」）出现
+        assert "每100克可食部约" not in d["reply"], f"单字词被当成精确食材输出: {msg}"
+
+
+def test_r5_composite_dish_not_misassigned(client):
+    """二审 P0-2（红线⑤）回归：整道菜/复合食品名不得误命中单品数值。
+
+    修复前「鸡胸肉沙拉多少千卡」因 `key in q` 命中「鸡胸肉」输出 165 千卡，
+    误导用户以为那是整道沙拉的热量。修复后走诚实 miss。
+    """
+    r = _chat(client, "鸡胸肉沙拉多少千卡", session_id="r5d", user_id="u5")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["intent"] == "nutrition_lookup_miss", f"整菜名应诚实 miss: {d['intent']}"
+    assert "暂未收录" in d["reply"]
+
+
+def test_r5_metric_prefix_word_order(client):
+    """二审 P0-2（红线⑤）回归：指标词前置问法（「多少克鸡胸肉」）须走数值工具。"""
+    r = _chat(client, "多少克鸡胸肉", session_id="r5w", user_id="u5")
+    assert r.status_code == 200
+    d = r.json()["data"]
+    assert d["intent"] == "nutrition_lookup", f"「多少克鸡胸肉」应命中数值工具: {d['intent']}"
+    assert "165" in d["reply"]
 
 
 def test_r6_empty_message_rejected(client):

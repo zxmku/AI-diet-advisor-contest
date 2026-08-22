@@ -231,7 +231,9 @@
       "excluded_foods": [
         "鸡蛋",
         "鸡蛋（全蛋）",
-        "鸭蛋"
+        "鸭蛋",
+        "白煮蛋",
+        "蛋"
       ],
       "limits": "避免鸡蛋及蛋制品",
       "disclaimer_type": "allergy"

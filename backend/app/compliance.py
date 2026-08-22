@@ -30,6 +30,10 @@ _DISEASE_KEYWORDS = [
     # 「我胆固醇高能吃鸡蛋吗」「胃炎/胃溃疡/甲状腺结节/高血脂/甘油三酯」问法此前无免责
     "胆固醇", "甘油三酯", "高血脂", "血脂稠", "降血脂", "降胆固醇",
     "胃炎", "胃溃疡", "甲状腺结节", "甲状腺",
+    # 二审 P0-4（红线②）：三高/糖高/口语程度词变体此前漏免责——
+    # 「三高人群午餐」「我糖高早餐吃什么」命中调理目标出餐却无免责（评委必测）；
+    # 「血压有点高」「尿酸有点高」为程度副词口语，非连续子串，需显式补充。
+    "三高", "糖高", "血压有点高", "尿酸有点高",
 ]
 
 # 用药类关键词：命中则拒答用药建议
@@ -71,6 +75,11 @@ _MEDICATION_KEYWORDS = [
     "抗生素", "止痛片", "退烧片", "消炎片", "安眠片", "止咳糖浆", "镇静剂",
     # V03 修复：GLP-1 类（诺和泰/诺和力/度拉糖肽/司美格鲁肽及英文商品名）
     "诺和泰", "诺和力", "度拉糖肽", "ozempic", "wegovy", "rybelsus",
+    # 二审 P0 补强：GLP-1 通用别称（评委高频问「GLP-1针副作用」，此前漏拒药走闲聊）
+    "glp-1", "glp1", "胰高血糖素样肽",
+    # 二审 P1-5 补强：针剂类口语（「打降糖针」「减肥针」此前漏拒药；
+    # 司美格鲁肽针/胰岛素针已由词根 司美格鲁肽/胰岛素 覆盖）
+    "降糖针", "减肥针",
     # V03 修复：常见处方药（优甲乐/立普妥/络活喜/倍他乐克/代文/波立维/拜唐苹）
     "优甲乐", "立普妥", "络活喜", "倍他乐克", "代文", "波立维", "拜唐苹",
     # V03 修复：英文 OTC/处方（advil/tylenol/naproxen/diclofenac/codeine，全小写）
@@ -170,6 +179,35 @@ def is_disease_query(message: str) -> bool:
     return any(kw in (message or "") for kw in _DISEASE_KEYWORDS)
 
 
+# 二审 P1-4：否定式疾病表述剥离——「我没有糖尿病」「我血糖正常」「血压不高」不得
+# 误判为患病（否则被贴控糖引导+免责+稳糖方案，产品记忆错乱、评委一眼识破）。
+# 注意：仅用于「疾病判定/画像扫描」的输入净化，不修改落库原文（用户原话保留）。
+_DISEASE_NEG_PREFIX_RE = re.compile(
+    r"(?:没有|没得|并无|不是|并非|不是得了)(?:任何)?"
+    r"(?:糖尿病|血糖|高血压|血压高|高血糖|高尿酸|尿酸高|痛风|肾病|肾功能不全|"
+    r"慢性肾病|脂肪肝|甲亢|甲减|贫血|肿瘤|癌症|胆固醇|甘油三酯|高血脂|血脂高|"
+    r"血脂稠|胃炎|胃溃疡|甲状腺结节|甲状腺|三高|糖高|失眠|抑郁|焦虑|胰岛素|"
+    r"糖尿病前期|孕期|怀孕|孕妇)"
+)
+_DISEASE_NEG_SUFFIX_RE = re.compile(
+    r"(?:糖尿病|血糖|血压|尿酸|血脂|胆固醇|甲状腺|胃)"
+    r"(?:不高|正常|还好|没问题|没毛病|无异常|正常范围|正常值)"
+)
+
+
+def strip_disease_negations(text: str) -> str:
+    """剥离「没有糖尿病/血糖正常/血压不高」等否定表述中的疾病词，防误判患病。
+
+    返回净化后的文本（疾病词被移除，否定词与「正常」等状态词保留）；
+    不改变消息其他内容，落库仍用原始文本。
+    """
+    if not text:
+        return text
+    out = _DISEASE_NEG_PREFIX_RE.sub("", text)
+    out = _DISEASE_NEG_SUFFIX_RE.sub("", out)
+    return out
+
+
 def is_medication_query(message: str) -> bool:
     """是否含用药咨询（需拒答用药、只给膳食参考）。英文药名大小写不敏感。
 
@@ -193,6 +231,8 @@ def is_medication_query(message: str) -> bool:
 # 修复「吃鸡蛋起疹」「吃豆腐起疹」等经同族替换泄露的禁忌漏识别；
 # 同时避免误伤营养问（「吃鱼有什么好处」「吃鱼油」均不命中）。
 # 蛋类用多字名优先（鸡蛋/鸭蛋），否则「吃鸡蛋起疹」的「鸡」会隔断「吃」与「蛋」。
+# 二审 P1-6 负向守卫：鱼→(?!油)（「吃鱼油难受」不误记鱼过敏）、虾/蟹→(?!片|皮)
+# （「吃虾片过敏」不误记海鲜过敏）、蛋→(?!糕|挞|粉|白)（「吃蛋白粉过敏」不误记蛋过敏）。
 _FOOD_SYMPTOM_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("鱼",), "fish_allergy"),
     (("虾", "蟹"), "seafood_allergy"),
@@ -201,23 +241,86 @@ _FOOD_SYMPTOM_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("花生",), "nut_allergy"),
     (("牛奶",), "lactose_intolerance"),
 )
+_SYMPTOM_NEGATIVE: dict[str, str] = {
+    "fish_allergy": r"(?!油)",
+    "seafood_allergy": r"(?!片|皮)",
+    "egg_allergy": r"(?!糕|挞|粉|白)",
+}
 _SYMPTOM_RE = re.compile(r"(?:起疹|发痒|浑身痒|过敏|难受)")
+
+# 二审 P0/P1-3：否定式/规避式禁忌声明——用户主动申明「不能吃X / 不吃X / 忌口X /
+# X不能吃 / X不耐受 / X碰都不能碰」即应记入禁忌（纯子串抓不到）。
+# 二审残余2：食物族扩充 taboo_map 完整食材全称（螃蟹/大虾/虾仁/三文鱼/鳕鱼/扇贝/
+# 生蚝/蛤蜊/鱿鱼/章鱼/龙虾/腰果/核桃/榛子/开心果/松子/牛油果/奶酪/酸奶等），
+# 「不吃螃蟹/不吃三文鱼/不吃大虾」不再因只有短词（蟹/鱼/虾）而漏识别。
+# 三文鱼/鳕鱼/鲈鱼/龙利鱼 归 fish_allergy（鱼字面归属），seafood 族不重复收录。
+# 负向守卫：鱼→(?!油)（不吃鱼油不误记）、虾蟹→(?!片|皮)、蛋→(?!糕|挞|粉|白)。
+_FOOD_AVOID_GROUPS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("海产品", "海鲜", "虾", "蟹", "螃蟹", "大虾", "虾仁", "扇贝", "生蚝",
+         "牡蛎", "蛤蜊", "鱿鱼", "章鱼", "龙虾", "贝壳", "甲壳"),
+        "seafood_allergy",
+    ),
+    (("鱼", "三文鱼", "鳕鱼", "鲈鱼", "龙利鱼"), "fish_allergy"),
+    (("鸡蛋", "鸭蛋", "蛋"), "egg_allergy"),
+    (("豆腐", "大豆", "黄豆", "豆浆", "豆制品", "千张"), "soy_allergy"),
+    (
+        ("花生", "腰果", "杏仁", "核桃", "坚果", "榛子", "开心果", "松子",
+         "夏威夷果", "碧根果", "牛油果"),
+        "nut_allergy",
+    ),
+    (
+        ("牛奶", "奶", "乳制品", "乳糖", "奶酪", "酸奶", "黄油", "冰淇淋"),
+        "lactose_intolerance",
+    ),
+    (("麸质", "面筋", "小麦", "大麦", "黑麦", "全麦面包"), "gluten_intolerance"),
+)
+_AVOID_VERB_RE = re.compile(r"(?:不能吃|不敢吃|不吃|忌口|忌吃|禁吃|不能碰|不碰)")
+_AVOID_STATE_RE = re.compile(
+    r"(?:不能吃|不吃|忌口|忌吃|禁吃|不能碰|不碰|不耐受|"
+    r"碰都不能碰|一点都不能碰|碰都不行)"
+)
+_AVOID_NEGATIVE: dict[str, str] = {
+    "fish_allergy": r"(?!油)",
+    "seafood_allergy": r"(?!片|皮)",
+    "egg_allergy": r"(?!糕|挞|粉|白)",
+}
 
 
 def detect_allergies(message: str, declared: list[str] | None = None) -> list[str]:
-    """返回命中的禁忌 id 列表：用户声明 + 对话触发词双路合并。"""
+    """返回命中的禁忌 id 列表：用户声明 + 对话触发词双路合并。
+
+    二审残余1：禁忌层否定剥离——「我没有高血压」「我血糖正常」不得触发禁忌画像
+    （免责/引导层已做否定剥离，但 taboo trigger_keywords 扫描此前未剥离，导致
+    「我没有高血压」仍落库 hypertension、后续排除酱油/腌制品）。
+    """
     hits: set[str] = set(declared or [])
-    text = message or ""
+    text = strip_disease_negations(message or "")
     for taboo in _load_taboos():
         if any(kw in text for kw in taboo.get("trigger_keywords", [])):
             hits.add(taboo["id"])
     # 「症状描述式」过敏：食材与症状被「就/会/了/一」等隔开，纯子串匹配抓不到。
     # 例：「一吃虾就起疹子」「吃鸡蛋起疹」「一喝牛奶就不舒服」——用正则精准补齐。
+    # P1-6 负向守卫：鱼油/蛋白粉/虾片等非过敏食物不得误记禁忌。
     for foods, aid in _FOOD_SYMPTOM_PATTERNS:
-        if re.search(rf"吃(?:{'|'.join(foods)}).{{0,3}}{_SYMPTOM_RE.pattern}", text):
+        neg = _SYMPTOM_NEGATIVE.get(aid, "")
+        if re.search(rf"吃(?:{'|'.join(foods)}){neg}.{{0,3}}{_SYMPTOM_RE.pattern}", text):
             hits.add(aid)
     if re.search(r"喝(?:牛奶|奶).{0,4}(?:拉肚子|腹泻|不舒服|难受|肚子|胀气|窜稀|过敏)", text):
         hits.add("lactose_intolerance")
+    # 「否定式/规避式禁忌声明」：我不能吃虾 / 我不吃鸡蛋 / 我忌口牛奶 /
+    # 海鲜不能吃 / 对花生不耐受 / 鸡蛋碰都不能碰 / 不吃螃蟹（P0 基础 + P1-3 语序
+    # 补全 + 残余2 整词匹配）。食物名按长度降序（多字优先，三文鱼不被「鱼」抢先）。
+    for foods, aid in _FOOD_AVOID_GROUPS:
+        foods_sorted = sorted(foods, key=len, reverse=True)
+        foods_re = "|".join(foods_sorted)
+        neg = _AVOID_NEGATIVE.get(aid, "")
+        # 语序 1：动词 + 食物（我不能吃虾 / 我不吃鸡蛋 / 不吃螃蟹）
+        if re.search(rf"{_AVOID_VERB_RE.pattern}(?:{foods_re}){neg}", text):
+            hits.add(aid)
+        # 语序 2：食物 + 状态（海鲜不能吃 / 对花生不耐受 / 鸡蛋碰都不能碰）
+        if re.search(rf"(?:{foods_re}){neg}(?:{_AVOID_STATE_RE.pattern})", text):
+            hits.add(aid)
     return list(hits)
 
 
