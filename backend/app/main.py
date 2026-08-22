@@ -873,6 +873,49 @@ def _session_has_disease(session_id: str | None) -> bool:
         db.close()
 
 
+# M11 疾病标签映射：疾病/症状关键词 → 引导语标签（「结合您的控糖需求，」）
+_DISEASE_LABELS: tuple[tuple[str, str], ...] = (
+    ("糖尿病", "控糖"), ("血糖", "控糖"), ("糖友", "控糖"),
+    ("痛风", "低嘌呤"), ("高尿酸", "低嘌呤"), ("尿酸高", "低嘌呤"),
+    ("高血压", "控盐"), ("血压高", "控盐"),
+    ("肾病", "护肾"), ("肾功能不全", "护肾"),
+    ("孕期", "孕期营养"), ("孕妇", "孕期营养"), ("怀孕", "孕期营养"),
+    ("甲亢", "甲状腺管理"), ("甲减", "甲状腺管理"),
+)
+
+
+def _profile_guide(message: str, disease: bool, session_id: str | None = None) -> str:
+    """M11 画像感知引导语：疾病用户回复差异化（「结合您的控糖需求，」）。
+
+    顾问感的核心：不是所有用户都得到同一句模板，而是「它记得我的情况，为我定制」。
+    疾病标签先从当前消息识别；当前消息无病名时扫会话历史（跨轮延续，「我有糖尿病」
+    之后随便问什么都能带「结合您的控糖需求」）；都识别不到才用通用「健康管理」兜底。
+    """
+    if not disease:
+        return ""
+    texts = [message or ""]
+    if session_id:
+        db = SessionLocal()
+        try:
+            recent = (
+                db.query(models.Message)
+                .filter(models.Message.session_id == session_id)
+                .order_by(models.Message.created_at.desc())
+                .limit(6)
+                .all()
+            )
+            texts += [m.content for m in recent]
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            db.close()
+    for t in texts:
+        for kw, label in _DISEASE_LABELS:
+            if kw in (t or ""):
+                return f"结合您的{label}需求，"
+    return "结合您的健康管理需求，"
+
+
 def _update_session_profile(
     user_id: str,
     session_id: str | None,
@@ -1144,6 +1187,14 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     detected_goal = _detect_goal(message)
     if detected_goal and detected_goal != _session_goal_tag(req.session_id):
         _update_session_profile(req.user_id, req.session_id, goal_tag=detected_goal)
+
+    # M11 画像感知引导语：疾病用户回复差异化（「结合您的控糖需求，」）——加在正文前，
+    # 位于 R3 剔除之前（引导语无禁忌词，不受剔除影响）；首次过敏追问（new_allergies）
+    # 时跳过，避免「追问 + 引导语」双重前缀叠罗汉。
+    if not new_allergies and reply:
+        guide = _profile_guide(message, disease, req.session_id)
+        if guide:
+            reply = f"{guide}\n\n{reply}"
 
     # P2 过敏追问：仅首次声明时，以追问开头确认「已记录」；未配置话术的 id 跳过
     # DEFECT-A 修复：R3 剔除循环只作用于**原回复正文**——先对原 reply 剔除再拼接追问
