@@ -1419,7 +1419,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             # 确认排除提示保留在 reply 尾部（追问之后），列全清单供用户知晓。
             reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
 
-    # AI 自动维护用户档案（团长：UI 不可编辑，由 AI 从对话中自动识别写入）：
+    # AI 自动维护用户档案（UI 端不可人工编辑，由 AI 从对话中自动识别写入）：
     # 规则检测（仅第一人称陈述，问句/第三人称不提取）→ 字段级去重写入
     # （档案里已有该字段则不覆盖，保留用户先说的；没有才写入）。
     # 红线：档案只做记录用途——不参与合规判定、不覆盖 allergies/goal_tag、
@@ -1741,7 +1741,7 @@ def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
     health_state / taboo_map / users.profile_json），零新表；仅展示层反查，
     不参与合规判定（守卫 2/3：不新增「档案→免免责/免拒药」通道、自由文本不进 LLM）。
 
-    团长决策：不再返回 next_step（目标切换/下一步建议均去掉）；AI 档案
+    产品决策：不再返回 next_step（目标切换/下一步建议均去掉）；AI 档案
     （profile_json）由对话规则检测自动维护，UI 不可编辑，此处只读聚合展示。
     """
     nickname: str | None = None
@@ -1841,7 +1841,7 @@ def health_state_endpoint(
     返回：连续坚持天数 + 今日饮食总结 + AI 欢迎语（M18）+ 只读 profile
     （身份/偏好/行为/AI 自动档案 ai_profile）+ taboo_options（前端档案渲染）。
     纯只读聚合，不写库；session_id 可选，缺省取该用户最近会话画像。
-    团长决策：不再返回 next_step（目标切换/下一步建议均去掉）。
+    产品决策：不再返回 next_step（目标切换/下一步建议均去掉）。
     """
     return make_response(
         {

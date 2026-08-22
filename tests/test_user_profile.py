@@ -2,7 +2,7 @@
 
 覆盖：
 - /api/state 返回 profile 结构（identity/preferences/behavior/ai_profile 键齐全，
-  不再返回 next_step——团长：目标切换和下一步建议都去掉）+
+  不再返回 next_step——产品决策：目标切换和下一步建议都去掉）+
   taboo_options（前端档案渲染）；
 - 建会话 + 声明海鲜过敏 + 记台账 → profile 聚合出 名字/排除食材/坚持天数/最近台账/
   今日未记录餐次；
@@ -107,7 +107,7 @@ def test_profile_aggregates_allergy_and_logs(client):
 
 
 def test_profile_no_next_step(client):
-    """P0 档案聚合不再返回 next_step（团长：目标切换和下一步建议都去掉）。"""
+    """P0 档案聚合不再返回 next_step（产品决策：目标切换和下一步建议都去掉）。"""
     body = _state(client, "u_prof_empty")
     prof = body["data"]["profile"]
     assert "next_step" not in prof
