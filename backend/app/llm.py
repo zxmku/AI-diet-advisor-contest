@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Sequence
@@ -98,6 +99,7 @@ def synthesize(
     max_tokens: int = 400,
     temperature: float = 0.3,
     session_id: str | None = None,
+    user_id: str | None = None,
     excluded_foods: list[str] | None = None,
     state_context: str | None = None,
 ) -> str | None:
@@ -106,6 +108,7 @@ def synthesize(
     返回模型文本；任何失败返回 None（上层降级 local-rules）。
     history 为最近用户消息（旧→新），用于轻量多轮上下文。
     session_id 用于 M17 成本闸门：会话级限速 + 记账归属（可为 None）。
+    user_id 用于 M17 回复缓存隔离（V06）：缓存键并入用户维度，杜绝跨用户串扰。
     excluded_foods 为已声明禁忌食材清单（红线②）：非空时注入系统提示，
     强制模型回答中严禁出现或推荐这些食材；为空时行为与之前完全一致。
 
@@ -114,6 +117,9 @@ def synthesize(
     - 回复缓存仅覆盖**无上下文的单轮请求**（history 为空）：同消息 TTL 内命中
       直接返回缓存，零花费；带 history 的多轮请求完全跳过缓存读/写（直通 API），
       杜绝跨会话上下文串扰（DEFECT-1 修复）；
+    - V06 修复：缓存键 = hash(user_id/session_id + user_message + excluded_foods
+      + state_context)，仅按 user_message 做键会把 A 用户（海鲜过敏）的禁忌回复
+      命中给 B 用户（无禁忌）——跨用户串扰；
     - 调用成功后记账（usage 缺失则按消息体/回复长度估算）；仅无上下文的单轮请求写缓存。
 
     允许传入空 chunks：用于打招呼 / 闲聊 / 身份问询等场景，靠系统提示第 5 条
@@ -131,8 +137,21 @@ def synthesize(
     # 缓存键只含 user_message，无法区分多轮上下文；history 非空时若复用缓存，
     # 会把其他会话的上下文带进回复（DEFECT-1 跨会话串扰）。因此 history 非空时
     # 完全跳过缓存读与缓存写（读直通 API，成功后也不写缓存）。
+    # V06：键并入 用户维度 + 消息 + 禁忌 + 健康状态 的哈希（sha1），既隔离跨用户
+    # 串扰，又避免把用户原始消息明文落进缓存文件。
     use_cache = not history
-    cache_key = user_message.strip() if use_cache else None
+    if use_cache:
+        cache_scope = "|".join(
+            [
+                user_id or session_id or "_anonymous",
+                user_message.strip(),
+                "|".join(sorted(excluded_foods or [])),
+                state_context or "",
+            ]
+        )
+        cache_key = hashlib.sha1(cache_scope.encode("utf-8")).hexdigest()
+    else:
+        cache_key = None
     if use_cache:
         cached = cost_gate.cache_get(cache_key)
         if cached is not None:

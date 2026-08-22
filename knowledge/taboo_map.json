@@ -149,7 +149,6 @@
       "name": "坚果过敏",
       "trigger_keywords": [
         "坚果过敏",
-        "坚果",
         "花生过敏",
         "腰果过敏",
         "杏仁过敏",
@@ -196,6 +195,81 @@
         "冰淇淋"
       ],
       "limits": "避免牛奶及乳制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "soy_allergy",
+      "name": "大豆/豆制品过敏",
+      "trigger_keywords": [
+        "大豆过敏",
+        "黄豆过敏",
+        "豆制品过敏",
+        "豆腐过敏",
+        "豆浆过敏"
+      ],
+      "excluded_foods": [
+        "豆腐",
+        "北豆腐",
+        "南豆腐",
+        "豆浆",
+        "豆浆（无糖）",
+        "千张",
+        "千张（豆腐皮）"
+      ],
+      "limits": "避免大豆及豆制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "egg_allergy",
+      "name": "鸡蛋过敏",
+      "trigger_keywords": [
+        "鸡蛋过敏",
+        "蛋过敏",
+        "蛋黄过敏",
+        "吃蛋起疹"
+      ],
+      "excluded_foods": [
+        "鸡蛋",
+        "鸡蛋（全蛋）",
+        "鸭蛋"
+      ],
+      "limits": "避免鸡蛋及蛋制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "wheat_allergy",
+      "name": "小麦/麸质过敏",
+      "trigger_keywords": [
+        "小麦过敏",
+        "麸质过敏",
+        "面粉过敏"
+      ],
+      "excluded_foods": [
+        "全麦面包",
+        "全麦馒头",
+        "小麦制品",
+        "面粉",
+        "面条",
+        "馒头"
+      ],
+      "limits": "避免小麦及其制品",
+      "disclaimer_type": "allergy"
+    },
+    {
+      "id": "fish_allergy",
+      "name": "鱼类过敏",
+      "trigger_keywords": [
+        "鱼过敏",
+        "对鱼过敏",
+        "吃鱼起疹"
+      ],
+      "excluded_foods": [
+        "三文鱼",
+        "鳕鱼",
+        "鲈鱼",
+        "龙利鱼"
+      ],
+      "limits": "避免鱼类及其制品",
       "disclaimer_type": "allergy"
     }
   ]

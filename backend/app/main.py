@@ -301,11 +301,36 @@ def _is_food_excluded(food: str, excluded_set: set[str]) -> bool:
 
 _REDACT_MARK = "（已按禁忌剔除）"
 _REDACT_RUN = re.compile(r"（已按禁忌剔除）(?:[、/，,]*（已按禁忌剔除）)+")
+# V04：「...」引号内容（营养速查表「暂未收录『食材』」等结构化引用），R3 剔除时须保护。
+_QUOTED_RE = re.compile(r"「[^」]*」")
 
 
 def _collapse_redaction_marks(text: str) -> str:
     """折叠连续的剔除标记（可被 、/，, 分隔），避免「（已按禁忌剔除）/（已按禁忌剔除）」观感。"""
     return _REDACT_RUN.sub(_REDACT_MARK, text)
+
+
+def _redact_excluded(text: str, excluded: Sequence[str]) -> str:
+    """R3 禁忌剔除：剔除回复正文中的禁忌食材名（长名优先，避免短名替换破坏长名）。
+
+    V04 修复：剔除前先把「...」引号内容临时占位（\\x00qN\\x00 标记），剔除完成后再还原——
+    否则「表中暂未收录『坚果』」这类引号内的食材名会被替换成「（已按禁忌剔除）」，
+    造成「『（已按禁忌剔除）』的精确营养数据」文本损坏。
+    """
+    protected: dict[str, str] = {}
+
+    def _hold_quoted(m: re.Match) -> str:
+        token = f"\x00q{len(protected)}\x00"
+        protected[token] = m.group(0)
+        return token
+
+    out = _QUOTED_RE.sub(_hold_quoted, text)
+    for f in sorted(excluded, key=len, reverse=True):
+        out = out.replace(f, _REDACT_MARK)
+    out = _collapse_redaction_marks(out)
+    for token, original in protected.items():
+        out = out.replace(token, original)
+    return out
 
 
 def _meal_method(
@@ -730,6 +755,7 @@ def _handle_companion(
             [],
             history=list(recent),
             session_id=req.session_id,
+            user_id=req.user_id,
             excluded_foods=excluded or None,
             state_context=health_state.build_state_context(req.user_id),
         )
@@ -1036,9 +1062,12 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # ── P5 饮食管理（记住饮食）+ 情感陪伴（一人食陪聊）：互斥优先于 P3/检索 ──
     # 命中记录/查询/陪伴意图即返回，不落入一餐生成/BM25 检索；问句/求方案语义
     # （什么/推荐/给我做）不当作记录，避免「早餐吃什么好」被误记成台账。
+    # V01 修复：用药硬拦截优先于一切——is_med_query 为 True 时跳过 P5，
+    # 「我吃了布洛芬怎么办」不得被记成饮食台账、「一个人吃饭可以吃布洛芬吗」
+    # 不得走情感陪伴，一律进入现有拒药路径。
     meal: dict | None = None
     decision: dict | None = None
-    p5 = _try_p5_intent(req, message, excluded, recent)
+    p5 = None if is_med_query else _try_p5_intent(req, message, excluded, recent)
     if p5 is not None:
         reply, intent, model_tag, degraded = p5
         sources = []
@@ -1131,6 +1160,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             [],  # 空 grounding：靠系统提示第 5 条约束行为，绝不裸奔
                             history=_recent_user_messages(req.session_id, 3),
                             session_id=req.session_id,
+                            user_id=req.user_id,
                             excluded_foods=excluded or None,
                             state_context=health_state.build_state_context(req.user_id),
                         )
@@ -1158,6 +1188,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         chunks,
                         history=_recent_user_messages(req.session_id, 3),
                         session_id=req.session_id,
+                        user_id=req.user_id,
                         excluded_foods=excluded or None,
                         state_context=health_state.build_state_context(req.user_id),
                     )
@@ -1201,11 +1232,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # （ALLERGY_FOLLOWUP 含花生/牛奶等精确食材名，绝不经剔除循环，避免被替换成
     # 「（已按禁忌剔除）」乱码）；排除提示仍追加在最终 reply 尾部（追问之后）。
     if excluded:
-        # 红线②「禁忌必排除」：先剔除原回复正文中出现的禁忌食材（长名优先，
-        # 避免短名替换破坏长名）。
-        for f in sorted(excluded, key=len, reverse=True):
-            reply = reply.replace(f, _REDACT_MARK)
-        reply = _collapse_redaction_marks(reply)
+        # 红线②「禁忌必排除」：先剔除原回复正文中出现的禁忌食材
+        # （长名优先 + 「...」引号内容占位保护，V04）。
+        reply = _redact_excluded(reply, excluded)
 
     if new_allergies:
         follow_up_parts = [
@@ -1277,12 +1306,10 @@ def _plan_from_goal(goal: str, allergy_ids: list[str]) -> dict:
         reason = _first_sentence(chunks[0].content)
     foods = [f for f in base["foods"] if f not in excluded_foods(allergy_ids)]
     excl = [f for f in base["foods"] if f in excluded_foods(allergy_ids)]
-    # 红线②「禁忌必排除」：推荐理由（来自素材 B 检索块）若含禁忌食材同样剔除，
-    # 长名优先替换，避免短名替换破坏长名。
+    # 红线②「禁忌必排除」：推荐理由（来自素材 B 检索块）若含禁忌食材同样剔除
+    # （长名优先 + 「...」引号内容占位保护，V04）。
     if excl:
-        for f in sorted(excl, key=len, reverse=True):
-            reason = reason.replace(f, _REDACT_MARK)
-        reason = _collapse_redaction_marks(reason)
+        reason = _redact_excluded(reason, excl)
     plan = {
         "name": base["name"],
         "kcal_range": base["kcal_range"],

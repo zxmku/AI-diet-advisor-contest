@@ -18,11 +18,16 @@ DISCLAIMER_STANDARD = (
 )
 
 # 疾病 / 症状 / 特殊人群意图触发词：命中即强制注入免责
+# V05 修复：补充 脂肪肝/甲减/血脂高/血压偏高/尿酸偏高/贫血/肿瘤/癌症/失眠/抑郁/焦虑，
+# 覆盖「我有XX怎么办」「XX怎么吃」问法（甲亢/血压高/尿酸高等已有）。
 _DISEASE_KEYWORDS = [
     "糖尿病", "血糖", "高尿酸", "尿酸高", "痛风", "肾病", "肾功能不全",
     "慢性肾病", "孕期", "怀孕", "孕妇", "高血压", "血压高", "控压",
     "胰岛素", "降脂", "甲亢", "乙肝", "用药", "药物", "剂量", "处方",
     "吃什么药", "药量",
+    # V05：常见慢性病/症状/心理类（命中即强制免责）
+    "脂肪肝", "甲减", "血脂高", "血压偏高", "尿酸偏高",
+    "贫血", "肿瘤", "癌症", "失眠", "抑郁", "焦虑",
 ]
 
 # 用药类关键词：命中则拒答用药建议
@@ -59,6 +64,14 @@ _MEDICATION_KEYWORDS = [
     "扶他林", "拜阿司匹灵", "达喜",
     # 药类大类词（不含「药」字，防「抗生素能随便吃吗」绕过）
     "抗生素", "止痛片", "退烧片", "消炎片", "安眠片", "止咳糖浆", "镇静剂",
+    # V03 修复：GLP-1 类（诺和泰/诺和力/度拉糖肽/司美格鲁肽及英文商品名）
+    "诺和泰", "诺和力", "度拉糖肽", "ozempic", "wegovy", "rybelsus",
+    # V03 修复：常见处方药（优甲乐/立普妥/络活喜/倍他乐克/代文/波立维/拜唐苹）
+    "优甲乐", "立普妥", "络活喜", "倍他乐克", "代文", "波立维", "拜唐苹",
+    # V03 修复：英文 OTC/处方（advil/tylenol/naproxen/diclofenac/codeine，全小写）
+    "advil", "tylenol", "naproxen", "diclofenac", "codeine",
+    # V03 修复：错别字/口语（止疼片/止疼药；退烧片/安眠药已有「药/片」覆盖）
+    "止疼片", "止疼药",
 ]
 
 # P2 过敏追问话术：键=knowledge/taboo_map.json 的禁忌 id，值为首次声明过敏时
@@ -102,6 +115,8 @@ _DIETARY_HINTS = (
     # 健康 / 疾病（与 _DISEASE_KEYWORDS 互补，路由时只需领域信号、无需免责语义）
     "糖尿病", "血糖", "痛风", "高尿酸", "高血压", "血脂", "肾病", "孕期",
     "孕妇", "哺乳", "过敏", "禁忌", "甲亢", "甲减", "脂肪肝", "贫血",
+    # V05：新疾病词同步过领域门控（否则 is_dietary_domain 不过 → 走 chitchat）
+    "血脂高", "血压偏高", "尿酸偏高", "肿瘤", "癌症", "失眠", "抑郁", "焦虑",
 )
 
 
@@ -144,6 +159,23 @@ def is_medication_query(message: str) -> bool:
     return any(kw in text for kw in _MEDICATION_KEYWORDS)
 
 
+# V02 症状式过敏映射：食材 → 禁忌族 id。
+# 正则形态：`吃<食材>.{0,3}(起疹|发痒|浑身痒|过敏|难受)`（「一吃虾就起疹」「吃鸡蛋起疹」）。
+# 从单一「吃虾」泛化到 鱼/虾/蟹/鸡蛋/豆腐/花生/牛奶，并按食材归属对应禁忌族，
+# 修复「吃鸡蛋起疹」「吃豆腐起疹」等经同族替换泄露的禁忌漏识别；
+# 同时避免误伤营养问（「吃鱼有什么好处」「吃鱼油」均不命中）。
+# 蛋类用多字名优先（鸡蛋/鸭蛋），否则「吃鸡蛋起疹」的「鸡」会隔断「吃」与「蛋」。
+_FOOD_SYMPTOM_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("鱼",), "fish_allergy"),
+    (("虾", "蟹"), "seafood_allergy"),
+    (("鸡蛋", "鸭蛋", "蛋"), "egg_allergy"),
+    (("豆腐",), "soy_allergy"),
+    (("花生",), "nut_allergy"),
+    (("牛奶",), "lactose_intolerance"),
+)
+_SYMPTOM_RE = re.compile(r"(?:起疹|发痒|浑身痒|过敏|难受)")
+
+
 def detect_allergies(message: str, declared: list[str] | None = None) -> list[str]:
     """返回命中的禁忌 id 列表：用户声明 + 对话触发词双路合并。"""
     hits: set[str] = set(declared or [])
@@ -152,9 +184,10 @@ def detect_allergies(message: str, declared: list[str] | None = None) -> list[st
         if any(kw in text for kw in taboo.get("trigger_keywords", [])):
             hits.add(taboo["id"])
     # 「症状描述式」过敏：食材与症状被「就/会/了/一」等隔开，纯子串匹配抓不到。
-    # 例：「一吃虾就起疹子」「我一喝牛奶就不舒服」——用正则精准补齐，避免误伤营养问。
-    if re.search(r"吃虾.{0,3}(?:起疹|发痒|浑身痒|过敏)", text):
-        hits.add("seafood_allergy")
+    # 例：「一吃虾就起疹子」「吃鸡蛋起疹」「一喝牛奶就不舒服」——用正则精准补齐。
+    for foods, aid in _FOOD_SYMPTOM_PATTERNS:
+        if re.search(rf"吃(?:{'|'.join(foods)}).{{0,3}}{_SYMPTOM_RE.pattern}", text):
+            hits.add(aid)
     if re.search(r"喝(?:牛奶|奶).{0,4}(?:拉肚子|腹泻|不舒服|难受|肚子|胀气|窜稀|过敏)", text):
         hits.add("lactose_intolerance")
     return list(hits)
