@@ -19,7 +19,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +41,7 @@ from app.api.schemas import (
 from app.compliance import (
     ALLERGY_FOLLOWUP,
     DISCLAIMER_STANDARD,
+    _load_taboos,
     detect_allergies,
     excluded_foods,
     is_dietary_domain,
@@ -905,6 +906,31 @@ def _session_has_disease(session_id: str | None) -> bool:
         db.close()
 
 
+def _session_profile_has_disease(session_id: str | None) -> bool:
+    """会话画像中是否含疾病类禁忌（taboo_map disclaimer_type == disease）。
+
+    守卫 2（P0）：用户把「高血压/糖尿病/痛风」写在档案（/api/session allergies）
+    而非对话里时，仍需跨轮免责延续 + 引导语差异化；但**不改变消息级拒药/免责
+    硬判定**——is_disease_query/is_medication_query 仍以每条消息关键词为准。
+    """
+    if not session_id:
+        return False
+    db = SessionLocal()
+    try:
+        sess = db.get(models.Session, session_id)
+        if not sess or not sess.allergies:
+            return False
+        by_id = {t["id"]: t for t in _load_taboos()}
+        return any(
+            aid in by_id and by_id[aid].get("disclaimer_type") == "disease"
+            for aid in sess.allergies
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        db.close()
+
+
 # M11 疾病标签映射：疾病/症状关键词 → 引导语标签（「结合您的控糖需求，」）
 _DISEASE_LABELS: tuple[tuple[str, str], ...] = (
     ("糖尿病", "控糖"), ("血糖", "控糖"), ("糖友", "控糖"),
@@ -921,11 +947,14 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
 
     顾问感的核心：不是所有用户都得到同一句模板，而是「它记得我的情况，为我定制」。
     疾病标签先从当前消息识别；当前消息无病名时扫会话历史（跨轮延续，「我有糖尿病」
-    之后随便问什么都能带「结合您的控糖需求」）；都识别不到才用通用「健康管理」兜底。
+    之后随便问什么都能带「结合您的控糖需求」）；再查会话画像的疾病类禁忌
+    （守卫 2：用户把「高血压」写在档案而非对话里时同样带「结合您的控盐需求」）；
+    都识别不到才用通用「健康管理」兜底。
     """
     if not disease:
         return ""
     texts = [message or ""]
+    sess_disease_name: str | None = None
     if session_id:
         db = SessionLocal()
         try:
@@ -937,6 +966,15 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
                 .all()
             )
             texts += [m.content for m in recent]
+            # 守卫 2：会话画像疾病类禁忌 → 对应引导语标签（档案写入而非对话声明时）
+            sess = db.get(models.Session, session_id)
+            if sess and sess.allergies:
+                by_id = {t["id"]: t for t in _load_taboos()}
+                for aid in sess.allergies:
+                    t = by_id.get(aid)
+                    if t and t.get("disclaimer_type") == "disease":
+                        sess_disease_name = t["name"]
+                        break
         except Exception:  # noqa: BLE001
             pass
         finally:
@@ -944,6 +982,10 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
     for t in texts:
         for kw, label in _DISEASE_LABELS:
             if kw in (t or ""):
+                return f"结合您的{label}需求，"
+    if sess_disease_name:
+        for kw, label in _DISEASE_LABELS:
+            if kw in sess_disease_name:
                 return f"结合您的{label}需求，"
     return "结合您的健康管理需求，"
 
@@ -959,6 +1001,9 @@ def _update_session_profile(
 
     会话不存在时按需创建（与 _persist_turn 同一套兜底），保证「中途声明」的
     过敏在下一轮仍生效——即「记得我」。写库放在 _persist_turn 之前。
+
+    守卫 1（P0）：写库前对 allergy_ids 做 taboo_map 白名单过滤——未知 id 一律丢弃
+    （安全失败优先），杜绝伪造 id 注入档案；与 POST /api/session 入口过滤双保险。
     """
     if not session_id:
         return
@@ -975,7 +1020,8 @@ def _update_session_profile(
             db.add(sess)
             db.flush()
         if allergy_ids is not None:
-            sess.allergies = allergy_ids
+            valid_ids = {t["id"] for t in _load_taboos()}
+            sess.allergies = [a for a in allergy_ids if a in valid_ids]
         if goal_tag is not None:
             sess.goal_tag = goal_tag
         db.commit()
@@ -1025,7 +1071,11 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # 多轮上下文：最近用户消息参与检索；疾病意图跨轮延续免责
     recent = _recent_user_messages(req.session_id, 2)
     ctx_query = " ".join([message] + recent)
-    disease = is_disease_query(message) or _session_has_disease(req.session_id)
+    disease = (
+        is_disease_query(message)
+        or _session_has_disease(req.session_id)
+        or _session_profile_has_disease(req.session_id)
+    )
 
     chunks = get_retriever().retrieve(ctx_query, top_k=4, current_query=message)
 
@@ -1465,7 +1515,14 @@ def get_user(user_id: str = Query(min_length=1, max_length=64)) -> UnifiedRespon
 
 @app.post("/api/session", response_model=UnifiedResponse)
 def session_op(req: SessionRequest) -> UnifiedResponse:
-    """新建/切换会话，携带人群标签与禁忌列表（真实写入 sessions 表）。"""
+    """新建/切换会话，携带人群标签与禁忌列表（真实写入 sessions 表）。
+
+    守卫 1（P0）：allergies 白名单校验——仅接受 taboo_map.json 已知 id，
+    未知 id 过滤掉（安全失败优先）；「仅含未知 id」对既有会话视为无效更新
+    （保持原样，不误清真实禁忌），杜绝伪造 id 注入档案。
+    """
+    valid_ids = {t["id"] for t in _load_taboos()}
+    req_allergies = [a for a in list(req.allergies) if a in valid_ids]
     db = SessionLocal()
     try:
         # 确保 users 表存在对应行：FK 约束开启时，缺失 user 行会触发 IntegrityError → 500
@@ -1481,14 +1538,17 @@ def session_op(req: SessionRequest) -> UnifiedResponse:
                 id=req.session_id or uuid.uuid4().hex,
                 user_id=req.user_id,
                 goal_tag=req.goal_tag,
-                allergies=list(req.allergies),
+                allergies=list(req_allergies),
             )
             db.add(sess)
         else:
             if req.goal_tag is not None:
                 sess.goal_tag = req.goal_tag
             if req.allergies:
-                sess.allergies = list(req.allergies)
+                # 守卫 1：白名单过滤后写入；过滤结果为空（原请求仅含未知 id）→ 保持原样
+                sess.allergies = (
+                    list(req_allergies) if req_allergies else list(sess.allergies or [])
+                )
         db.commit()
         sid = sess.id
         goal = sess.goal_tag
@@ -1531,11 +1591,139 @@ async def tts(req: TTSRequest):
     return Response(content=audio, media_type="audio/mpeg")
 
 
-@app.get("/api/state", response_model=UnifiedResponse)
-def health_state_endpoint(user_id: str = Query(min_length=1, max_length=64)) -> UnifiedResponse:
-    """健康状态引擎（M2/M3）：连续坚持天数 + 今日饮食总结 + AI 欢迎语（M18）。
+# ── P0 用户档案聚合（记忆模块：只读展示，零写库、零合规豁免） ──
+_PROFILE_MEAL_TAGS = ("早餐", "午餐", "晚餐")
 
-    供前端首屏展示「记得你」与「坚持情况」，为饮食决策服务。
+
+def _build_next_step(
+    today_meal_count: int,
+    recorded_tags: set[str],
+    has_any_log: bool,
+    allergy_ids: list[str],
+) -> dict:
+    """P0 下一步建议：简单规则（今天还差某餐 → 无台账搭一餐 → 确认禁忌 → 记一餐）。
+
+    规则刻意从简、可解释：优先补记今天未记录的餐次，其次引导第一餐/确认禁忌。
+    """
+    missing = [t for t in _PROFILE_MEAL_TAGS if t not in recorded_tags]
+    if today_meal_count > 0 and missing:
+        tag = missing[0]
+        action = {
+            "早餐": "record_breakfast",
+            "午餐": "record_lunch",
+            "晚餐": "record_dinner",
+        }[tag]
+        return {"text": f"今天还差{tag}没记，吃完告诉我一声", "action": action}
+    if not has_any_log:
+        return {"text": "还没有饮食记录，让我先帮你搭一餐？", "action": "build_meal"}
+    if allergy_ids:
+        return {"text": "我记着你要避开这些食物，需要调整随时告诉我", "action": "confirm_allergy"}
+    return {"text": "告诉我今天吃了什么，我帮你记下来", "action": "record_meal"}
+
+
+def _build_user_profile(user_id: str, session_id: str | None = None) -> dict:
+    """P0 用户档案聚合（记忆模块·只读）：身份 + 偏好 + 行为 + 下一步建议。
+
+    全部复用现有数据（users / sessions.allergies+goal_tag / DietLog /
+    health_state / taboo_map），零新表、零 schema 变更；仅展示层反查，
+    不参与合规判定（守卫 2/3：不新增「档案→免免责/免拒药」通道、自由文本不进 LLM）。
+    """
+    nickname: str | None = None
+    since: str | None = None
+    goal_tag: str | None = None
+    allergy_ids: list[str] = []
+    recent_meals: list[dict] = []
+    db = SessionLocal()
+    try:
+        user = db.get(models.User, user_id)
+        if user is not None:
+            nickname = user.nickname
+            if user.created_at is not None:
+                # created_at 存 UTC，本地化到 +8 时区后取自然日
+                since = (user.created_at + timedelta(hours=8)).strftime("%Y-%m-%d")
+        # 会话画像：优先指定 session，其次该用户最近一条会话
+        sess = db.get(models.Session, session_id) if session_id else None
+        if sess is None:
+            sess = (
+                db.query(models.Session)
+                .filter(models.Session.user_id == user_id)
+                .order_by(models.Session.created_at.desc())
+                .first()
+            )
+        if sess is not None:
+            goal_tag = sess.goal_tag
+            allergy_ids = list(sess.allergies or [])
+        # 最近台账（DietLog 最近 5 条，复用 _handle_diet_query 查询模式）
+        logs = (
+            db.query(models.DietLog)
+            .filter(models.DietLog.user_id == user_id)
+            .order_by(models.DietLog.created_at.desc(), models.DietLog.id.desc())
+            .limit(5)
+            .all()
+        )
+        recent_meals = [{"meal_tag": log.meal_tag, "content": log.content} for log in logs]
+    except Exception:  # noqa: BLE001
+        logger.exception("用户档案聚合失败（降级为空 profile）")
+    finally:
+        db.close()
+
+    # 禁忌反查（与合规执行层同一 taboo_map id 体系，绝不另起炉灶）
+    taboos = _load_taboos()
+    by_id = {t["id"]: t for t in taboos}
+    allergy_names = [by_id[a]["name"] for a in allergy_ids if a in by_id]
+    excluded_list = excluded_foods(allergy_ids)
+    disease_ids = [
+        a for a in allergy_ids if a in by_id and by_id[a].get("disclaimer_type") == "disease"
+    ]
+    # disease_labels：按 disease 类禁忌 name 匹配 _DISEASE_LABELS（高血压→控盐 等）
+    disease_labels: list[str] = []
+    for did in disease_ids:
+        name = by_id[did]["name"]
+        for kw, label in _DISEASE_LABELS:
+            if kw in name and label not in disease_labels:
+                disease_labels.append(label)
+                break
+
+    today_summary = health_state.get_today_summary(user_id)
+    recorded_tags = {m["meal_tag"] for m in today_summary["meals"]}
+    today_missing = [t for t in _PROFILE_MEAL_TAGS if t not in recorded_tags]
+    next_step = _build_next_step(
+        today_meal_count=today_summary["meal_count"],
+        recorded_tags=recorded_tags,
+        has_any_log=bool(recent_meals),
+        allergy_ids=allergy_ids,
+    )
+
+    return {
+        "identity": {"nickname": nickname, "since": since},
+        "preferences": {
+            "goal_tag": goal_tag,
+            "allergy_ids": allergy_ids,
+            "allergy_names": allergy_names,
+            "excluded_foods": excluded_list,
+            "disease_labels": disease_labels,
+        },
+        "behavior": {
+            "streak": health_state.get_streak(user_id),
+            "today_meal_count": today_summary["meal_count"],
+            "week_trend": health_state.get_week_trend(user_id),
+            "recent_meals": recent_meals,
+            "today_missing_meals": today_missing,
+        },
+        "next_step": next_step,
+    }
+
+
+@app.get("/api/state", response_model=UnifiedResponse)
+def health_state_endpoint(
+    user_id: str = Query(min_length=1, max_length=64),
+    session_id: str | None = Query(default=None, max_length=64),
+) -> UnifiedResponse:
+    """健康状态引擎（M2/M3）+ 用户档案聚合（P0 记忆模块）。
+
+    返回：连续坚持天数 + 今日饮食总结 + AI 欢迎语（M18）+ 只读 profile
+    （身份/偏好/行为/下一步建议）+ taboo_options（前端档案禁忌编辑渲染）。
+    纯只读聚合，不写库；session_id 可选，缺省取该用户最近会话画像。
     """
     return make_response(
         {
@@ -1543,6 +1731,15 @@ def health_state_endpoint(user_id: str = Query(min_length=1, max_length=64)) -> 
             "today_summary": health_state.get_today_summary(user_id),
             "week_trend": health_state.get_week_trend(user_id),
             "greeting": health_state.build_greeting(user_id),
+            "profile": _build_user_profile(user_id, session_id),
+            "taboo_options": [
+                {
+                    "id": t["id"],
+                    "name": t["name"],
+                    "disclaimer_type": t.get("disclaimer_type", "allergy"),
+                }
+                for t in _load_taboos()
+            ],
         },
         sources=[],
         model="local-rules",
