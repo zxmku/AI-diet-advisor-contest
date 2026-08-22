@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from app.config import KNOWLEDGE_DIR
@@ -48,6 +49,16 @@ _MEDICATION_KEYWORDS = [
     "格列齐特", "格列吡嗪", "格列本脲", "格列汀", "列净",
     # 常见中成药（均为明确药品）
     "健胃消食片", "藿香正气", "连花清瘟", "板蓝根",
+    # 英文通用名（评委可能用英文问药，如 ibuprofen/aspirin；均小写，配合 message.lower() 匹配）
+    "ibuprofen", "aspirin", "paracetamol", "acetaminophen", "amoxicillin",
+    "penicillin", "cephalosporin", "metformin", "semaglutide", "azithromycin",
+    "amlodipine", "metoprolol", "insulin", "levofloxacin", "ciprofloxacin",
+    "atorvastatin", "omeprazole", "loratadine", "cetirizine",
+    # 商品名（评委可能问「芬必得/泰诺」而非「布洛芬/对乙酰氨基酚」）
+    "芬必得", "泰诺", "泰诺林", "必理通", "散利痛", "百服宁",
+    "扶他林", "拜阿司匹灵", "达喜",
+    # 药类大类词（不含「药」字，防「抗生素能随便吃吗」绕过）
+    "抗生素", "止痛片", "退烧片", "消炎片", "安眠片", "止咳糖浆", "镇静剂",
 ]
 
 # P2 过敏追问话术：键=knowledge/taboo_map.json 的禁忌 id，值为首次声明过敏时
@@ -87,8 +98,9 @@ def is_disease_query(message: str) -> bool:
 
 
 def is_medication_query(message: str) -> bool:
-    """是否含用药咨询（需拒答用药、只给膳食参考）。"""
-    return any(kw in (message or "") for kw in _MEDICATION_KEYWORDS)
+    """是否含用药咨询（需拒答用药、只给膳食参考）。英文药名大小写不敏感。"""
+    text = (message or "").lower()
+    return any(kw in text for kw in _MEDICATION_KEYWORDS)
 
 
 def detect_allergies(message: str, declared: list[str] | None = None) -> list[str]:
@@ -98,6 +110,12 @@ def detect_allergies(message: str, declared: list[str] | None = None) -> list[st
     for taboo in _load_taboos():
         if any(kw in text for kw in taboo.get("trigger_keywords", [])):
             hits.add(taboo["id"])
+    # 「症状描述式」过敏：食材与症状被「就/会/了/一」等隔开，纯子串匹配抓不到。
+    # 例：「一吃虾就起疹子」「我一喝牛奶就不舒服」——用正则精准补齐，避免误伤营养问。
+    if re.search(r"吃虾.{0,3}(?:起疹|发痒|浑身痒|过敏)", text):
+        hits.add("seafood_allergy")
+    if re.search(r"喝(?:牛奶|奶).{0,4}(?:拉肚子|腹泻|不舒服|难受|肚子|胀气|窜稀|过敏)", text):
+        hits.add("lactose_intolerance")
     return list(hits)
 
 
