@@ -11,6 +11,7 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import DATABASE_URL
@@ -62,11 +63,14 @@ def init_db() -> None:
         with engine.connect() as conn:
             try:
                 # 老库升级：users 表补 AI 档案列（新库 create_all 已含该列，
-                # 此处 ALTER 会因列已存在抛错 → 捕获忽略，天然幂等）。
+                # 此处 ALTER 会因列已存在抛错 → 仅该场景忽略，天然幂等）。
                 conn.exec_driver_sql("ALTER TABLE users ADD COLUMN profile_json TEXT")
                 conn.commit()
                 logger.info("迁移：users 表已补充 profile_json 列（AI 自动维护档案）")
-            except Exception:  # noqa: BLE001  # 列已存在 → 忽略
+            except OperationalError as e:  # noqa: BLE001
+                # 列已存在 → 幂等忽略；其余 SQL 异常必须暴露（评审级工程规范）
+                if "duplicate column" not in str(e).lower():
+                    raise
                 conn.rollback()
             mode = conn.exec_driver_sql("PRAGMA journal_mode").scalar()
         logger.info("SQLite journal_mode=%s（期望 wal）", mode)
