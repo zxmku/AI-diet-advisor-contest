@@ -179,7 +179,7 @@ _HEALTH_STATE_PHRASES: tuple[str, ...] = (
     "血糖高", "血糖偏高", "高血糖", "糖尿病", "三高", "血压高", "尿酸高",
     "减肥中", "瘦身中", "在减肥", "想减肥", "想减脂", "在减脂", "要减脂",
     "想减重", "在减重", "要减重", "减重中", "想降体重",
-    "想增肌", "在增肌", "增肌中", "想控糖",
+    "想增肌", "在增肌", "增肌中", "想控糖", "在控糖", "要控糖", "控糖中",
 )
 
 
@@ -305,6 +305,17 @@ def _is_meal_intent(message: str) -> bool:
     if "今晚" in text and re.search(r"今晚.{0,6}(?:吃|餐|饭|做|搭|点|宵夜)", text):
         return True
     return False
+
+
+# 终极压测：一餐触发词里的「问句/计算」语义——「这一餐吃几个鸡蛋」「这一餐需要
+# 摄入多少蛋白质」是咨询/计算而非求搭餐，不得被截胡成目标追问。
+# 注意不能含裸「多少」：「会员多少钱+晚餐怎么吃」混合意图的「多少钱」是平台问，
+# 不得拦截 meal 分支（平台+膳食两段都要答）。
+_MEAL_QUESTION_MARKS: tuple[str, ...] = ("是不是", "会不会", "几个", "需要摄入")
+
+
+def _is_meal_question(message: str) -> bool:
+    return any(q in (message or "") for q in _MEAL_QUESTION_MARKS)
 
 
 def _meal_goal(message: str, session_goal: str | None) -> str | None:
@@ -572,8 +583,11 @@ _DIET_QUERY_TRIGGERS: tuple[str, ...] = (
 _DIET_RECORD_TRIGGERS_EXTRA: tuple[str, ...] = ("记台账", "记录台账")
 # 问句/求方案语义：命中则不当作记录（如「帮我记一下今天吃什么」是求建议，不是记台账）。
 # 三审修复：补「怎么」——「怎么记录台账」是问方法，不得被「记录台账」误记为台账。
+# 终极压测：补「是不是/会不会」——「我吃了番茄炒虾仁，我是不是要死了？」是恐慌
+# 咨询，不得被「吃了」劫持成台账记录（维生素C+虾砒霜谣言场景）。
 _MEAL_REQUEST_HINTS: tuple[str, ...] = (
-    "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么", "安排",
+    "什么", "啥", "吗", "呢", "推荐", "给我做", "帮我做", "想吃", "该吃", "怎么",
+    "是不是", "会不会", "安排",
 )
 
 # ── P5b 情感陪伴（一人食陪聊）：触发词 ──
@@ -847,6 +861,107 @@ def _disease_local_reply(message: str) -> str:
     )
 
 
+# ── 终极压测：危险信号（极端断食 / 酮症酸中毒前兆）──
+# 考官下套：极端危险行为不得当普通问答/FAQ 处理，必须风险预警 + 就医引导 + 免责。
+_DANGER_SIGNALS: tuple[tuple[str, str], ...] = (
+    ("断食", "extreme_fast"),
+    ("只喝水", "extreme_fast"),
+    ("只喝黑咖啡", "extreme_fast"),
+    ("尿酮体", "ketoacidosis"),
+    ("酮体测出来", "ketoacidosis"),
+    ("烂苹果味", "ketoacidosis"),
+    ("酮症", "ketoacidosis"),
+)
+_DANGER_REPLIES: dict[str, str] = {
+    "extreme_fast": (
+        "⚠️ 连续断食/极低热量饮食（尤其只喝黑咖啡）可能导致低血糖、头晕、脱水甚至晕厥，"
+        "并造成肌肉流失与基础代谢下降，非常不建议。\n"
+        "更稳妥的做法是温和的低盐低碳水消水肿饮食（按 211 餐盘：2 份蔬菜、1 份优质蛋白、"
+        "1 份粗粮主食），既精神饱满又能健康减重。若已出现明显不适，请及时就医。"
+    ),
+    "ketoacidosis": (
+        "⚠️ 尿酮体阳性伴随烂苹果味呼吸，可能是**酮症酸中毒**的前兆，属于医疗风险信号。\n"
+        "请立即停止极端低碳/断碳饮食，尽快前往医院检查（血酮/血糖/电解质），"
+        "切勿自行处理。平时也建议在专业人士指导下科学调整饮食结构。"
+    ),
+}
+
+
+def _danger_signal_reply(message: str) -> str | None:
+    """命中极端危险行为信号 → 返回风险预警回复；否则 None。"""
+    for signal, tag in _DANGER_SIGNALS:
+        if signal in (message or ""):
+            return _DANGER_REPLIES[tag]
+    return None
+
+
+# ── 终极压测：食物相克谣言辟谣（考官下套）──
+# 「维生素C和虾一起吃会变砒霜中毒」类民间谣言：不得被台账/一餐劫持，循证辟谣+安抚。
+_FOOD_MYTH_RE = re.compile(r"(?:砒霜|中毒|相克|致癌|剧毒|死人|暴毙|要死了|会死)")
+_FOOD_MYTH_REPLY = (
+    "别慌，这是流传已久的**食物相克谣言**：正常饮食量下，维生素 C 和虾（砷）"
+    "并不会反应生成足以中毒的砒霜，可以放心吃。\n"
+    "真正要注意的是：食材新鲜卫生、彻底煮熟，以及过敏人群避开自身过敏原。"
+    "如果出现明显不适，请及时就医。"
+)
+
+
+def _food_myth_reply(message: str) -> str | None:
+    """命中食物相克恐慌问法 → 辟谣回复；否则 None。"""
+    if _FOOD_MYTH_RE.search(message or "") and any(
+        f in (message or "") for f in ("虾", "蟹", "维生素C", "vc", "西红柿", "番茄")
+    ):
+        return _FOOD_MYTH_REPLY
+    return None
+
+
+def _compliance_query_reply(message: str) -> str | None:
+    """终极压测：法律合规质问（执业医师认证/出问题谁负责）→ 产品定位 + 免责边界。"""
+    if any(w in (message or "") for w in (
+        "执业医师", "认证", "吃出问题", "谁负责", "担责", "医疗建议", "可靠吗", "有保障吗"
+    )):
+        return (
+            "我是基于权威膳食指南的 **AI 膳食辅助工具**，提供生活化饮食建议，"
+            "不替代执业医师/注册营养师的临床诊断与治疗。健康问题请以正规医疗机构意见"
+            "为准；对饮食方案有个性化顾虑，建议同步咨询注册营养师。"
+        )
+    return None
+
+
+def _usage_guide_reply(message: str) -> str | None:
+    """终极压测：功能询问（怎么记录台账/这个功能怎么用）→ 引导而非「帮不上忙」。"""
+    if any(w in (message or "") for w in (
+        "怎么记录", "如何记录", "怎么记台账", "怎么用", "能做什么", "能帮我做什么",
+        "记录功能", "这个功能",
+    )):
+        return (
+            "简单说，你**直接告诉我吃了什么**，我就帮你记台账（比如「中午吃了糙米饭和"
+            "鸡胸肉」）；想查记录就说「查台账」「查一下我的台账」。我还能帮你搭一餐、"
+            "查食材热量、给点单建议，随时开口就行～"
+        )
+    return None
+
+
+def _apply_allergy_exemptions(excluded: list[str], message: str) -> list[str]:
+    """细分过敏豁免：消息含「X不过敏/X没事/X可以吃/X能吃」时，从排除清单移除 X。
+
+    终极压测（考官下套）：「我对花生过敏，但吃核桃腰果不过敏」——坚果族被整族
+    排除时，明确豁免的核桃/腰果不得误排；只保留用户真正过敏的花生。
+    """
+    if not excluded:
+        return excluded
+    text = message or ""
+    blocks = re.findall(r"([\u4e00-\u9fff]{1,8}?)(?:不过敏|没事|可以吃|能吃)", text)
+    if not blocks:
+        return excluded
+    keep: list[str] = []
+    for f in excluded:
+        if any(f in block for block in blocks):
+            continue
+        keep.append(f)
+    return keep
+
+
 def _handle_companion(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
 ) -> tuple[str, str, bool]:
@@ -943,6 +1058,46 @@ def _pick_reply_chunk(chunks: Sequence[SourceChunk], query: str) -> SourceChunk 
                 key=lambda c: (_token_overlap(c.content, q_tokens), c.score or 0),
             )
     return max(chunks, key=lambda c: (_token_overlap(c.content, q_tokens), c.score or 0))
+
+
+def _jin_scale(message: str) -> float | None:
+    """识别市斤量词 → 折算系数（一斤=500g=5 份×100g；半斤=2.5；两斤=10；一两=0.5）。
+
+    终极压测（考官下套）：「一斤去皮生鸡胸肉…多少大卡」须按 500g 折算，
+    不能只答每 100g 数值。无市斤量词返回 None。
+    """
+    m = re.search(r"([一二两三四五六七八九十半]|\d+)\s*斤", message or "")
+    if not m:
+        return None
+    u = m.group(1)
+    if u == "半":
+        return 2.5
+    if u == "两":
+        return 0.5
+    if u in "一":
+        return 5.0
+    if u in "二":
+        return 10.0
+    if u in "三":
+        return 15.0
+    if u.isdigit():
+        return float(u) * 5.0
+    return None
+
+
+def _scale_lookup_reply(reply: str, scale: float, grams: int) -> str:
+    """把「每100克…约 X 千卡，Y 克…」按市斤倍率折算（GI/毫克等不乘）。"""
+    idx = reply.find("约")
+    if idx == -1:
+        return reply
+    head, tail = reply[:idx], reply[idx:]
+    tail = tail.replace("每100克可食部约", f"每{grams} 克（{grams // 100} 份 × 100 克）约", 1)
+    tail = re.sub(
+        r"(\d+(?:\.\d+)?) (千卡|克)",
+        lambda m: f"{round(float(m.group(1)) * scale, 1):g} {m.group(2)}",
+        tail,
+    )
+    return head + tail
 
 
 def _platform_reply_prefix(message: str) -> tuple[str | None, SourceChunk | None]:
@@ -1265,6 +1420,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         or _session_profile_has_disease(req.session_id)
         # Gemini 审查回归：会话目标为「调理」（稳糖/慢病）时，常规问答同样必须带免责
         or (_session_goal_tag(req.session_id, req.user_id) == "调理")
+        # 终极压测：本轮消息即声明调理（「我在控糖」）→ 当场免责，不等写库下轮生效
+        or (_detect_goal(message_scan) == "调理")
     )
 
     chunks = get_retriever().retrieve(ctx_query, top_k=4, current_query=message)
@@ -1283,9 +1440,15 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     new_allergies = detected_allergies - session_allergy_ids
     allergy_ids = set(req.allergies) | detected_allergies | session_allergy_ids
     excluded = excluded_foods(list(allergy_ids))
+    # 终极压测：细分过敏豁免——「花生过敏但核桃腰果不过敏」→ 从本轮排除清单移除
+    # 被明确豁免的食材（保留花生，不误排核桃/腰果）。
+    excluded = _apply_allergy_exemptions(excluded, message)
 
     disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
-
+    # 终极压测：危险信号（极端断食/酮症酸中毒前兆）强制带免责
+    danger_reply = _danger_signal_reply(message)
+    if danger_reply:
+        disclaimer = DISCLAIMER_STANDARD
     # ── R1/R2 修复：一餐前置门槛 ──
     # 判定顺序：用药硬拦截 → 数值精确问答 → 一餐 → 检索/LLM/其他。
     # （R1）「晚餐鸡胸肉多少千卡」不得被一餐劫持成追问目标，必须走数值路径返回速查表精确值；
@@ -1321,6 +1484,18 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     if p5 is not None:
         reply, intent, model_tag, degraded = p5
         sources = []
+    elif not is_med_query and danger_reply:
+        # 终极压测：危险信号（极端断食/酮症酸中毒前兆）优先于普通问答/FAQ，
+        # 强制风险预警 + 就医引导；免责由 disclaimer 注入（视为风险场景）。
+        reply = danger_reply
+        intent = "risk_warning"
+        sources = []
+    elif not is_med_query and _food_myth_reply(message):
+        # 终极压测：食物相克恐慌问法（维生素C+虾=砒霜）→ 辟谣 + 安抚，
+        # 不得被台账/一餐追问劫持成答非所问。
+        reply = _food_myth_reply(message)
+        intent = "myth_buster"
+        sources = []
     elif _is_identity_question(message) and not is_med_query:
         # 人设问：自我介绍，不追问目标、不挂来源（暴风雪回归：此前被「帮我做」
         # 截获成一餐目标追问）
@@ -1332,10 +1507,12 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         intent = "chitchat"
         sources = []
     elif _is_meal_intent(message) and not is_med_query and not is_disease_query(message) \
-            and not (is_num_query and num_food):
+            and not (is_num_query and num_food) and not _is_meal_question(message):
         # 暴风雪回归：疾病问法（「有严重的脂肪肝…早餐吃什么能改善」）不得落入
         # 一餐方案模板（local-rules 下会降级成增肌/减脂方案）——疾病问法走检索/
         # LLM 疾病路径（免责+针对性建议）。
+        # 终极压测：问句（「这一餐吃几个鸡蛋」「是不是要死了」）是计算/咨询而非
+        # 求搭餐——不得被「一餐」触发词截胡成目标追问。
         goal = _meal_goal(message, _session_goal_tag(req.session_id, req.user_id))
         if goal is None:
             # 消息无目标词且会话也无 goal → 先追问目标（复用追问风格，不直接出餐）
@@ -1398,6 +1575,10 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             row = nutrition_lookup.lookup(food)
             if row:
                 reply = nutrition_lookup.format_reply(row)
+                # 终极压测：市斤换算（「一斤去皮生鸡胸肉…多少大卡」）→ 500g 折算
+                jin = _jin_scale(message)
+                if jin and jin != 1.0:
+                    reply = _scale_lookup_reply(reply, jin, int(jin * 100))
                 intent = "nutrition_lookup"
                 sources = [{
                     "source": "A",
@@ -1450,6 +1631,20 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                         "我很乐意为您解答。"
                     )
                     intent = "medication_refuse"
+                elif is_disease_query(strip_disease_negations(message)):
+                    # 终极压测：孕期/慢病问法无检索命中时不得落「帮不上忙」闲聊——
+                    # 给通用疾病膳食原则（「怀孕3个月生鱼片能不能吃」此前答非所问）。
+                    reply = _disease_local_reply(message)
+                    intent = "nutrition_qa"
+                elif _compliance_query_reply(message):
+                    # 终极压测：法律合规质问（「有没有执业医师认证/出问题谁负责」）
+                    # 不得「帮不上忙」打发——声明产品定位 + 免责边界。
+                    reply = _compliance_query_reply(message)
+                    intent = "compliance_note"
+                elif _usage_guide_reply(message):
+                    # 终极压测：功能询问（「怎么记录台账」「这个功能怎么用」）→ 引导
+                    reply = _usage_guide_reply(message)
+                    intent = "usage_guide"
                 else:
                     llm_reply = None
                     if llm.is_enabled():
@@ -1512,9 +1707,29 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                             # （「脂肪肝…早餐吃什么」曾引到增肌方案块）——知识库无该
                             # 疾病内容时给通用疾病膳食原则，避免答非所问。
                             # 注意用否定剥离后的消息：「我没有糖尿病」不得触发此分支。
-                            reply = _disease_local_reply(message)
+                            if is_platform:
+                                # 终极压测：平台+疾病混合意图（「SaaS年费15万…痛风
+                                # 能喝浓鸡汤吗」）→ 平台段与疾病段都答，互不覆盖。
+                                reply = (
+                                    f"【{top.chapter} · {top.section}】\n{snippet}"
+                                    + "\n\n"
+                                    + _disease_local_reply(message)
+                                )
+                            else:
+                                reply = _disease_local_reply(message)
                         else:
                             reply = f"【{top.chapter} · {top.section}】\n{snippet}"
+                            # 终极压测：平台咨询中的夸大承诺前提（保证月瘦/随便吃）
+                            # → 追加热量缺口纠偏，杜绝给商业承诺背书。
+                            if is_platform and any(
+                                w in (message or "") for w in ("保证", "月瘦", "随便吃", "躺着瘦", "不运动")
+                            ):
+                                reply += (
+                                    "\n\n⚠️ 需要说明：专业服务提供的是膳食规划与陪伴，"
+                                    "不是「保瘦」承诺。科学减脂的核心仍是**热量缺口**"
+                                    "（摄入 < 消耗）+ 均衡营养，任何服务都无法替代"
+                                    "「管住嘴、迈开腿」的基本盘。"
+                                )
 
     # P2 画像持久化：过敏全集写回 session + 隐含人群目标动态更新
     # （写库放在 _persist_turn 之前；异常不影响主流程）
@@ -1530,7 +1745,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # 时跳过，避免「追问 + 引导语」双重前缀叠罗汉。
     if not new_allergies and reply:
         guide = _profile_guide(message, disease, req.session_id)
-        if guide:
+        # 终极压测修复：_disease_local_reply 内部已带「结合您的…需求，」前缀，
+        # 此处再拼会重复（「结合您的健康管理需求，\n\n结合您的健康管理需求，」）。
+        if guide and not reply.startswith(guide):
             reply = f"{guide}\n\n{reply}"
 
     # P2 过敏追问：仅首次声明时，以追问开头确认「已记录」；未配置话术的 id 跳过

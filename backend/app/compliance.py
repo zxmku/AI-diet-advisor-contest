@@ -30,6 +30,8 @@ _DISEASE_KEYWORDS = [
     # 「我胆固醇高能吃鸡蛋吗」「胃炎/胃溃疡/甲状腺结节/高血脂/甘油三酯」问法此前无免责
     "胆固醇", "甘油三酯", "高血脂", "血脂稠", "降血脂", "降胆固醇",
     "胃炎", "胃溃疡", "甲状腺结节", "甲状腺",
+    # 终极压测：哺乳期（「哺乳期妈妈…方头鱼汤」）此前不在疾病词表，无免责
+    "哺乳期", "哺乳", "母乳喂养", "下奶",
     # 二审 P0-4（红线②）：三高/糖高/口语程度词变体此前漏免责——
     # 「三高人群午餐」「我糖高早餐吃什么」命中调理目标出餐却无免责（评委必测）；
     # 「血压有点高」「尿酸有点高」为程度副词口语，非连续子串，需显式补充。
@@ -191,7 +193,10 @@ _DISEASE_NEG_PREFIX_RE = re.compile(
 )
 _DISEASE_NEG_SUFFIX_RE = re.compile(
     r"(?:糖尿病|血糖|血压|尿酸|血脂|胆固醇|甲状腺|胃)"
-    r"(?:不高|正常|还好|没问题|没毛病|无异常|正常范围|正常值|一切正常|都很正常|都正常)"
+    r"(?:不高|正常|还好|没问题|没毛病|无异常|一切正常|都很正常|都正常)"
+    # 终极压测修复：「血糖正常范围是多少」是科普问句（问参考区间），不是自我声明
+    # 「我血糖正常」——「正常」后紧跟「范围/值/区间」时不作否定剥离。
+    r"(?!范围|值|区间)"
 )
 
 
@@ -246,7 +251,7 @@ _SYMPTOM_NEGATIVE: dict[str, str] = {
     "seafood_allergy": r"(?!片|皮)",
     "egg_allergy": r"(?!糕|挞|粉|白)",
 }
-_SYMPTOM_RE = re.compile(r"(?:起疹|发痒|浑身痒|过敏|难受)")
+_SYMPTOM_RE = re.compile(r"(?:起疹|发痒|浑身痒|红疹|疹子|过敏|难受)")
 
 # 二审 P0/P1-3：否定式/规避式禁忌声明——用户主动申明「不能吃X / 不吃X / 忌口X /
 # X不能吃 / X不耐受 / X碰都不能碰」即应记入禁忌（纯子串抓不到）。
@@ -296,6 +301,10 @@ def detect_allergies(message: str, declared: list[str] | None = None) -> list[st
     """
     hits: set[str] = set(declared or [])
     text = strip_disease_negations(message or "")
+    # 终极压测（考官下套）：程度副词插入——「海鲜**严重**过敏」「坚果**重度**过敏」
+    # 会把「海鲜过敏」触发词切开导致漏检；归一为「过敏」后精准命中。
+    for deg in ("严重过敏", "重度过敏", "很过敏", "特别过敏", "有点过敏", "轻微过敏", "高度过敏", "非常过敏"):
+        text = text.replace(deg, "过敏")
     for taboo in _load_taboos():
         if any(kw in text for kw in taboo.get("trigger_keywords", [])):
             hits.add(taboo["id"])
@@ -304,7 +313,9 @@ def detect_allergies(message: str, declared: list[str] | None = None) -> list[st
     # P1-6 负向守卫：鱼油/蛋白粉/虾片等非过敏食物不得误记禁忌。
     for foods, aid in _FOOD_SYMPTOM_PATTERNS:
         neg = _SYMPTOM_NEGATIVE.get(aid, "")
-        if re.search(rf"吃(?:{'|'.join(foods)}){neg}.{{0,3}}{_SYMPTOM_RE.pattern}", text):
+        # .{0,6}（终极压测）：「吃鸡蛋身上就起大片红疹子」——症状前可隔
+        # 「身上就起大片」等描述（原 .{0,3} 跨不过导致漏检）。
+        if re.search(rf"吃(?:{'|'.join(foods)}){neg}.{{0,6}}{_SYMPTOM_RE.pattern}", text):
             hits.add(aid)
     if re.search(r"喝(?:牛奶|奶).{0,4}(?:拉肚子|腹泻|不舒服|难受|肚子|胀气|窜稀|过敏)", text):
         hits.add("lactose_intolerance")

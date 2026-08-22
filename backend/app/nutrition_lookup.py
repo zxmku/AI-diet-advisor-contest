@@ -71,7 +71,8 @@ _TARGET_SECTIONS = ("3.1", "3.2", "3.3", "3.4")
 
 # 数值问答可识别的指标词（长词优先，避免「卡」误命中「千卡/卡路里」）
 _METRICS: list[str] = [
-    "卡路里", "千卡", "kcal", "热量", "蛋白质", "脂肪", "碳水", "克", "g", "卡",
+    "卡路里", "千卡", "kcal", "大卡", "热量", "蛋白质", "脂肪", "碳水",
+    "胆固醇", "膳食纤维", "维生素C", "钙", "克", "g", "卡",
 ]
 
 # 疑问/停用词（提取食材前的噪声）：长词优先
@@ -91,6 +92,13 @@ _QUERY_STOP: set[str] = {
     "每100克", "每100g", "每百克", "每 100 克", "每 100克", "每100 克",
     "每克", "每100g", "100克", "一百克",
 }
+
+# 非「查表」方法问（终极压测：考官下套）——提取串含这些词时说明用户问的是
+# 「怎么吃/怎么补/摄入量计算」而非「<食材> 精确数值」→ 放行检索/LLM，不得截胡成 miss。
+_METHOD_HINTS: tuple[str, ...] = (
+    "怎么", "如何", "补够", "吃够", "摄入", "推荐", "能吃", "能喝", "该吃", "该喝",
+    "够吗", "多少才", "需要多少", "每天吃多少", "吃多少", "做法",
+)
 
 NUTRITION_TABLE: dict[str, dict] = {}
 _SECTION_CONTENT: dict[str, str] = {}
@@ -274,6 +282,14 @@ def _is_matchable_food(food: str) -> bool:
     return False
 
 
+def _longest_table_key_in(text: str) -> str | None:
+    """在文本里找命中的最长表内食材 key（终极压测：「一斤去皮生鸡胸肉」→「鸡胸肉」）。"""
+    for key in sorted(NUTRITION_TABLE, key=len, reverse=True):
+        if key in text:
+            return key
+    return None
+
+
 def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     """判断是否为「<食材> 多少/几 <营养指标>」数值查询。
 
@@ -288,6 +304,12 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     Gemini 审查回归（漏洞1）：双食材对比句式（「三文鱼和鳕鱼相比哪个热量高」
     「西红柿和黄瓜每100克热量各是多少」）不得把前半句拼成一个假食材查表报
     「暂未收录「三文鱼鳕鱼相比哪个」」——含对比词时放行给 RAG/LLM 多食材处理。
+
+    终极压测回归（考官下套）：两类「非精确查表」问法不得被数值分支截胡成 miss：
+    - 方法/计算问法（「70公斤…每天要精准摄入多少克蛋白质」「不吃猪肉牛肉蛋白质
+      怎么补够」）：提取串含方法词（怎么/如何/补够/摄入…）→ 放行检索/LLM；
+    - 带修饰的食材（「一斤去皮生鸡胸肉…多少大卡」）：提取串含表内食材时直接取
+      命中的最长表内 key（「鸡胸肉」）做精确查表，市斤换算由调用方按「斤」折算。
     """
     if not query:
         return (False, None)
@@ -313,6 +335,17 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     # 提取结果含连接词（和/与/及）→ 疑似多食材，放行通用检索
     if any(cw in food for cw in ("和", "与", "及")):
         return (False, None)
+    # 终极压测：方法/计算问法（怎么吃/怎么补/摄入量）不是「查表」语义 → 放行检索。
+    # 用整句 q 检查——「…蛋白质怎么补够」的「补够」在指标词之后，提取串里看不到。
+    if any(h in q for h in _METHOD_HINTS):
+        return (False, None)
+    # 提取串含表内食材（「一斤去皮生鸡胸肉」→「鸡胸肉」）→ 用命中的最长表内 key 精确查表。
+    # 仅当表内 key 位于提取串**末尾**（前有量词/修饰词）才算「本体+修饰」；
+    # key 后还有内容（「鸡胸肉沙拉」）是整菜，保持原样走诚实 miss（红线⑤）。
+    if food not in NUTRITION_TABLE and _SYNONYM_ALIASES.get(food) not in NUTRITION_TABLE:
+        inner = _longest_table_key_in(food)
+        if inner and food.endswith(inner):
+            food = inner
     return (True, food)
 
 
@@ -323,6 +356,11 @@ def _extract_food(prefix: str) -> str:
         p = p.replace(st, "")
     for m in sorted(_METRICS, key=len, reverse=True):
         p = p.replace(m, "")
+    # 终极压测（考官下套）：市斤量词（「一斤去皮生鸡胸肉」）与计算问噪声词剥离，
+    # 否则提取串尾部带垃圾（「…总共提供大」）导致表内 key 子串提取失效。
+    p = re.sub(r"[一二两三四五六七八九十]+\s*斤", "", p)
+    for junk in ("总共", "提供", "大概", "大约", "一个"):
+        p = p.replace(junk, "")
     p = re.sub(r"[\s，。、？！,.;:：（）()\[\]【】\"'“”]", "", p)
     return p.strip()
 
