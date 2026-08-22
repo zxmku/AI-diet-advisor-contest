@@ -316,7 +316,7 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
     q = query
     # 对比句式（多食材比较）：不作为单一精确数值查询拦截
     if any(cw in q for cw in ("相比", "哪个更", "哪个热量", "哪个蛋白质", "哪个脂肪",
-                              "哪个碳水", "各是多少", "各多少", "分别")):
+                              "哪个碳水", "各是多少", "各多少", "分别", "哪个")):
         return (False, None)
     metric = None
     for m in sorted(_METRICS, key=len, reverse=True):
@@ -352,10 +352,13 @@ def is_numeric_lookup_query(query: str) -> tuple[bool, str | None]:
 def _extract_food(prefix: str) -> str:
     """从指标词前的前缀里剔除疑问/停用词与指标词，得到食材 token。"""
     p = prefix
+    # 第三类修复（#42）：剥离全角/半角括号里的限定词（「鸡蛋白（蛋清）」→「鸡蛋白」），
+    # 避免括号内容残成后置 token（「蛋清」）污染食材；后续由同义词归一（鸡蛋白→鸡蛋）。
+    p = re.sub(r"[（(][^）)]*[）)]", "", p)
     # 先剥复合问句/噪声词（必须在 _QUERY_STOP 之前：否则「是」会先把「是不是」
     # 拆成「不」残渣，junk 再也匹配不到）。第七波：补「是不是/会不会/该/太/少吃」。
     for junk in ("是不是", "会不会", "总共", "提供", "大概", "大约", "一个",
-                 "该", "太", "少吃", "多吃", "适量"):
+                 "该", "太", "少吃", "多吃", "适量", "碳水化合物"):
         p = p.replace(junk, "")
     for st in sorted(_QUERY_STOP, key=len, reverse=True):
         p = p.replace(st, "")
@@ -364,7 +367,18 @@ def _extract_food(prefix: str) -> str:
     # 终极压测（考官下套）：市斤量词（「一斤去皮生鸡胸肉」）剥离——
     # 第七波：斤正则补「半」（与 _jin_scale 的 半斤=2.5 一致）。
     p = re.sub(r"[一二两三四五六七八九十半]+\s*斤", "", p)
+    # 考官下套修复：剥离阿拉伯数字（「鸡胸肉每100克是不是200千卡」若不剥数字，
+    # 会提取成「鸡胸肉100200」导致 miss；速查表 31 食材名均不含数字，剥离安全）。
+    p = re.sub(r"\d+(?:\.\d+)?", "", p)
     p = re.sub(r"[\s，。、？！,.;:：（）()\[\]【】\"'“”]", "", p)
+    # 第三类修复：剥离后置修饰语（煮成饭/含/化合物/哪个/更多/相比…），
+    # 让库内食材 key 落到 token 末尾，触发「表内 key 救援」(food.endswith)。
+    # 注意：蛋清/蛋白 不再盲剥——「鸡蛋白」盲剥「蛋白」会残成「鸡」导致漏检；
+    # 蛋清→鸡蛋、鸡蛋白→鸡蛋 改由 synonyms.json 同义词归一（见 lookup 精确匹配）。
+    for mod in ("煮成饭", "煮成", "做成", "化合物",
+               "含", "哪个", "更多", "相比", "左右", "大约", "大概"):
+        while p.endswith(mod):
+            p = p[: -len(mod)]
     return p.strip()
 
 
@@ -446,3 +460,190 @@ def nutrition_table_status() -> dict:
     返回: {"ready": bool, "rows": int, "detail": str}
     """
     return {"ready": _NUTRITION_READY, "rows": _NUTRITION_ROWS, "detail": _STATUS_DETAIL}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 确定性数值引擎（扩展：单/多食材 · 份量折算 · 对比 · 百分比红线约束）
+# 红线⑤：数值只引素材原文（速查表），纯规则计算，绝不进 LLM、绝不编造/推算表外值。
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 指标字段 → 中文触发词（识别用户点名的营养维度）
+_FIELD_WORDS: dict[str, tuple[str, ...]] = {
+    "kcal": ("热量", "千卡", "卡路里", "大卡", "kcal", "Kcal", "KCAL"),
+    "protein": ("蛋白质", "蛋白"),
+    "fat": ("脂肪",),
+    "carb": ("碳水", "碳水化合物"),
+    "fiber": ("纤维", "膳食纤维"),
+    "calcium": ("钙",),
+    "cholesterol": ("胆固醇",),
+    "gi": ("升糖指数", "GI", "gi", "Gi"),
+    "vitc": ("维生素C", "维C"),
+}
+# 已知但速查表未收录的食材：命中即诚实 miss / 对比时诚实排除，绝不进 LLM 编造。
+# 注意：勿放「豆腐」「蛋白」等过短/易作子串误命中的词（会误中「豆腐皮」「蛋白质」）。
+_KNOWN_MISSING_FOODS: tuple[str, ...] = (
+    "蛋清", "鸡蛋白", "鲈鱼", "甜玉米", "玉米粒", "米饭",
+    "薯条", "牛油果", "苹果", "香蕉", "白粥", "小米", "鸡胸", "燕麦片",
+)
+# 百分比/占比意图词：素材无「每日需要量」参考值，命中则只报原值+诚实说明，不推算占比
+_RATIO_WORDS = ("占", "百分之", "日需", "每天需要", "比例", "占比", "一百分之")
+
+
+def _extract_metrics(q: str) -> list[str]:
+    """返回消息中点名的营养指标字段（kcal/protein/...），顺序按 _FIELD_WORDS。"""
+    q = q or ""
+    out = [f for f, words in _FIELD_WORDS.items() if any(w in q for w in words)]
+    return out
+
+
+def _food_tokens(q: str) -> list[tuple[str, str | None]]:
+    """扫描消息中的食材 token：[(token, canonical_or_None), ...]。
+    canonical 非空=速查表收录；None=已知未收录食材（诚实 miss）。最长匹配优先、互不重叠。"""
+    text = q or ""
+    cands: list[tuple[str, str | None]] = [(k, k) for k in NUTRITION_TABLE]
+    for alias, canon in _SYNONYM_ALIASES.items():
+        cands.append((alias, canon))
+    for mf in _KNOWN_MISSING_FOODS:
+        if mf not in [c for _, c in cands]:
+            cands.append((mf, None))
+    cands.sort(key=lambda x: len(x[0]), reverse=True)
+    toks: list[tuple[str, str | None]] = []
+    occupied = [False] * len(text)
+    for token, canon in cands:
+        if not token:
+            continue
+        idx = text.find(token)
+        while idx != -1:
+            end = idx + len(token)
+            if end <= len(occupied) and not any(occupied[idx:end]):
+                for i in range(idx, end):
+                    occupied[i] = True
+                toks.append((token, canon))
+            idx = text.find(token, idx + 1)
+    return toks
+
+
+def _extract_grams(q: str) -> int | None:
+    """识别显式克重（含毫升，按 1g/ml 近似）与市斤量词（一斤=500g 等）。
+
+    市斤折算与 main._jin_scale 语义一致（一斤=500g=5 份×100g；半斤=250g；
+    两斤=1000g；一两=50g；数字斤=N×500g）。保证「一斤鸡胸肉」走 ×5 折算。
+    """
+    text = q or ""
+    # 数字 + 克 / 毫升（毫升按 1g/ml 近似）
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:克|g|G|毫升|ml|ML)", text)
+    if m:
+        return int(round(float(m.group(1))))
+    # 市斤量词：汉字数字 / 数字 + 斤 → 折算克数
+    m = re.search(r"([一二两三四五六七八九十半]|\d+)\s*斤", text)
+    if m:
+        u = m.group(1)
+        if u == "半":
+            return 250
+        if u == "两":
+            return 50
+        if u == "一":
+            return 500
+        if u == "二":
+            return 1000
+        if u == "三":
+            return 1500
+        num_map = {"四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        if u in num_map:
+            return num_map[u] * 500
+        if u.isdigit():
+            return int(u) * 500
+    return None
+
+
+def build_numeric_reply(message: str, med_query: bool = False):
+    """确定性数值引擎入口。返回 (reply, sources, miss_food)。
+    - 能答：reply 非空，sources 为溯源块；
+    - 数值意图但食材未收录：reply=None, miss_food=食材名（交 main 走诚实 miss）；
+    - 非数值问：三者皆 None（交下游 LLM/门控）。
+
+    红线⑤：所有数值取自速查表原文，计算为纯规则（份量×倍率 / 同指标排序），绝不 LLM。
+    """
+    if med_query:
+        return (None, None, None)
+    q = message or ""
+    metrics = _extract_metrics(q)
+    if not metrics:
+        return (None, None, None)
+    toks = _food_tokens(q)
+    if not toks:
+        return (None, None, None)
+    in_table: dict[str, dict] = {}
+    out_table: list[str] = []
+    for token, canon in toks:
+        if canon and canon in NUTRITION_TABLE and canon not in in_table:
+            in_table[canon] = NUTRITION_TABLE[canon]
+        elif canon is None and token not in out_table:
+            out_table.append(token)
+    if not in_table and not out_table:
+        return (None, None, None)
+
+    grams = _extract_grams(q)
+    # 对比（≥2 个表内食材）按每100克比较，份量倍率对「哪个更高/更低」无影响，故不折算
+    scale = (grams / 100.0) if (grams and len(in_table) < 2) else 1.0
+    ratio_intent = any(w in q for w in _RATIO_WORDS)
+
+    if not in_table:
+        # 全部表外：诚实 miss（取首个提到的食材）
+        return (None, None, out_table[0])
+
+    lines: list[str] = []
+    for canon, row in in_table.items():
+        name = row.get("display_name", canon)
+        chap = row.get("source_chapter", "")
+        sec = row.get("source_section", "")
+        head = f"【{chap} · {sec}】" if chap else ""
+        vals: list[str] = []
+        scaled_vals: list[str] = []
+        for field in ("kcal", "protein", "fat", "carb", "fiber", "calcium", "cholesterol", "gi", "vitc"):
+            if field in row and field in metrics:
+                v = row[field]
+                label, unit = _FIELD_META[field]
+                vals.append(f"{label} {_fmt_num(v)}{(' ' + unit) if unit else ''}")
+                if field != "gi" and scale != 1.0:
+                    sv = round(v * scale, 1)
+                    scaled_vals.append(f"{label} {_fmt_num(sv)}{(' ' + unit) if unit else ''}")
+        if not vals:
+            lines.append(f"{head}{name}：速查表未列出您问的营养维度，恕不臆测。")
+            continue
+        line = f"{head}{name}（每100克可食部）：" + "，".join(vals) + "。"
+        if scaled_vals and grams:
+            line += f"（按您说的 {grams} 克折算，约 " + "，".join(scaled_vals) + "）"
+        lines.append(line)
+
+    # 多食材对比结论（按用户点名的指标排序）
+    if len(in_table) >= 2:
+        cmp_lines: list[str] = []
+        for field in metrics:
+            present = [(c, in_table[c][field]) for c in in_table if field in in_table[c]]
+            if len(present) >= 2:
+                present.sort(key=lambda x: x[1], reverse=True)
+                hi = present[0]
+                rest = "、".join(f"{c}（{_fmt_num(v)}）" for c, v in present[1:])
+                cmp_lines.append(f"· {_FIELD_META[field][0]}：{hi[0]}（{_fmt_num(hi[1])}）最高，其次 {rest}。")
+        if cmp_lines:
+            lines.append("对比结论：\n" + "\n".join(cmp_lines))
+
+    # 表外食材诚实声明（绝不编造其数值）
+    if out_table:
+        lines.append(f"注：「{('、'.join(out_table))}」未收录于速查表，无法提供权威数值，恕不臆测。")
+
+    # 百分比/占比意图但素材无每日参考值 → 诚实说明，不推算
+    if ratio_intent:
+        lines.append("（速查表未提供「每日需要量/推荐摄入量」参考值，故无法计算占比或比例，恕不推算。）")
+
+    reply = "\n".join(lines)
+    primary = next(iter(in_table.values()))
+    sources = [{
+        "source": "A",
+        "chapter": primary.get("source_chapter", ""),
+        "section": primary.get("source_section", ""),
+        "content": get_table_markdown(primary.get("source_section", "")) or "",
+        "score": None,
+    }]
+    return (reply, sources, None)

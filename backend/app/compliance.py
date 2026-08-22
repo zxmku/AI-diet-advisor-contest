@@ -95,6 +95,9 @@ _MEDICATION_KEYWORDS = [
     # 含组合词命中时 hits 必不止裸「药」，白名单豁免不生效，确保真药词不被豁免）
     "吃药", "什么药", "感冒药", "止痛药", "退烧药", "安眠药", "消炎药", "减肥药",
     "中药", "西药",
+    # V12 修复：痛风降尿酸处方药整类缺失（此前「非布司他/别嘌醇」漏拒药）、
+    # 中成药降脂（血脂康/脂必妥）此前漏拒药——补全真药硬闸门，确定性拦截。
+    "非布司他", "别嘌醇", "苯溴马隆", "秋水仙碱", "血脂康", "脂必妥",
 ]
 
 # V11 修复：已知含「药」但非用药咨询的词——裸「药」命中且仅命中裸「药」时豁免（不拒药）。
@@ -234,6 +237,83 @@ def is_medication_query(message: str) -> bool:
     if hits == ["药"] and any(w in text for w in _MEDICATION_WHITELIST):
         return False
     return True
+
+
+# V12 修复：保健品（膳食补充剂）软路径。
+# 设计铁律（用户定调）：保健品不是药 → 绝不硬拒药（避免对「哪些食物含辅酶Q10」等
+# 正常营养问过度拒绝）；但当保健品处在「替代/停用处方药」语境时，属医疗安全红线 →
+# 走硬拒药（is_supplement_replace_drug_query 并入 is_med_query）。
+# 其余选购/辨别语境 → 追加一段自然安全提醒（_SUPPLEMENT_ADVISORY），非拒药、非硬编码。
+_SUPPLEMENT_KEYWORDS = (
+    "辅酶q10", "辅酶q10", "鱼油", "深海鱼油", "益生菌", "蛋白粉", "叶酸", "dha",
+    "胶原蛋白", "酵素", "葡萄籽", "叶黄素", "维生素", "维c", "褪黑素", "氨糖",
+    "软骨素", "钙片", "复合维生素", "保健", "补剂", "膳食补充剂", "营养补充剂",
+    "护肝片", "美白丸", "鱼油软糖",
+)
+# 食物/营养语境：问「哪些食物含X/天然来源」→ 正常营养作答，零追加（class=1）
+_SUPPLEMENT_FOOD_CONTEXT = (
+    "食物", "食材", "哪些食物", "来源", "天然", "水果", "蔬菜", "吃什么补", "食补",
+)
+# 选购/辨别语境：想买/挑/被推荐/自行服用 → 追加安全提醒（class=2）
+_SUPPLEMENT_BUY_CONTEXT = (
+    "买", "推荐", "牌子", "品牌", "选", "挑", "吃哪个", "哪种好", "靠谱", "正品",
+    "自行", "自己吃", "吃来", "补充", "能吃吗", "适合吃", "该吃", "吃吗", "怎么吃",
+)
+_SUPPLEMENT_REPLACE_DRUG_RE = re.compile(
+    r"(代替|替代|替换|取代|停.{0,4}药|改吃).{0,8}(药|降压药|降糖药|处方药|血压药|血糖药)"
+)
+
+
+def _supp_norm(message: str):
+    """归一化：小写 + 去空格（兼容「辅酶 Q10」「深海 鱼油」等带空格写法）。"""
+    text = (message or "").lower()
+    text_nospace = re.sub(r"\s+", "", text)
+    return text, text_nospace
+
+
+def _supp_has_keyword(text: str, text_nospace: str) -> bool:
+    """保健品词命中：同时兼容带空格写法（如「辅酶 Q10」→ 去空格后「辅酶q10」）。"""
+    return any(k in text or k in text_nospace for k in _SUPPLEMENT_KEYWORDS)
+
+
+def classify_supplement(message: str) -> int:
+    """保健品语境分类：0=无/纯信息问；1=食物营养语境（正常作答，零追加）；
+
+    2=选购/辨别语境（追加安全提醒，不拒药）。不命中保健品词返回 0。
+    """
+    text, text_nospace = _supp_norm(message)
+    if not _supp_has_keyword(text, text_nospace):
+        return 0
+    if any(c in text for c in _SUPPLEMENT_FOOD_CONTEXT):
+        return 1
+    if any(c in text for c in _SUPPLEMENT_BUY_CONTEXT):
+        return 2
+    return 0
+
+
+def is_supplement_replace_drug_query(message: str) -> bool:
+    """保健品处在「替代/停用处方药」语境 → 医疗安全红线，须走硬拒药。
+
+    仅当消息同时含保健品词与「代替/替代/停X药/改吃」+药类词时命中，
+    避免「血糖高能不能吃辅酶Q10」等正常营养问被误拒。
+    保健品词命中兼容带空格写法（如「辅酶 Q10」→「辅酶q10」）。
+    """
+    text, text_nospace = _supp_norm(message)
+    if not _supp_has_keyword(text, text_nospace):
+        return False
+    return bool(_SUPPLEMENT_REPLACE_DRUG_RE.search(text))
+
+
+_SUPPLEMENT_ADVISORY = (
+    "温馨提示：保健品（膳食补充剂）不是药品，不能替代药物治疗。"
+    "选购前请认准正规渠道、看清成分与剂量说明，别被夸大宣传忽悠；"
+    "若正在服药或身体有不适，建议先咨询医生或药师再决定是否服用。"
+)
+_SUPPLEMENT_REPLACE_DRUG_REPLY = (
+    "任何膳食补充剂（如辅酶Q10、鱼油等）都绝不能擅自替代医生开具的处方药物，"
+    "擅自停药或换药可能引发严重健康风险（如血压、血糖失控）。"
+    "如有用药调整需求，请务必咨询您的主治医师或药师，严格遵医嘱决定。"
+)
 
 
 # V02 症状式过敏映射：食材 → 禁忌族 id。

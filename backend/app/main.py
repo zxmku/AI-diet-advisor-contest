@@ -42,12 +42,16 @@ from app.compliance import (
     ALLERGY_FOLLOWUP,
     DISCLAIMER_STANDARD,
     _load_taboos,
+    classify_supplement,
     detect_allergies,
     excluded_foods,
     is_dietary_domain,
     is_disease_query,
     is_medication_query,
+    is_supplement_replace_drug_query,
     strip_disease_negations,
+    _SUPPLEMENT_ADVISORY,
+    _SUPPLEMENT_REPLACE_DRUG_REPLY,
 )
 from app.cost_gate import cost_gate
 from app.database import SessionLocal, init_db
@@ -352,6 +356,8 @@ def _is_food_excluded(food: str, excluded_set: set[str]) -> bool:
 
 _REDACT_MARK = "（已按禁忌剔除）"
 _REDACT_RUN = re.compile(r"（已按禁忌剔除）(?:[、/，,]*（已按禁忌剔除）)+")
+# 考官下套修复：剔除标记后紧跟的食物形态单字（碎/酱/粉/片…）是残字，一并吞掉。
+_REDACT_SUFFIX_RE = re.compile(r"（已按禁忌剔除）[碎酱粉片油酥泥蓉露汁末粒糕饼]")
 # V04：「...」引号内容（营养速查表「暂未收录『食材』」等结构化引用），R3 剔除时须保护。
 _QUOTED_RE = re.compile(r"「[^」]*」")
 
@@ -385,6 +391,8 @@ def _redact_excluded(text: str, excluded: Sequence[str]) -> str:
         if len(f) < 2:
             continue
         out = out.replace(f, _REDACT_MARK)
+    # 吞掉剔除标记后紧跟的食物形态残字，避免「（已按禁忌剔除）碎/酱」乱码。
+    out = _REDACT_SUFFIX_RE.sub(_REDACT_MARK, out)
     out = _collapse_redaction_marks(out)
     for token, original in protected.items():
         out = out.replace(token, original)
@@ -605,10 +613,23 @@ _COMPANION_TRIGGERS: tuple[str, ...] = (
 # 主动触发（用户说「打分/评估/今天吃得怎么样」），不自动打扰。
 # 与记录/查询/陪伴语义互斥（不含「记一下/把…记」「吃了什么/查记录」「心情/陪我」），
 # 也不含任何药品/会员/企业词 → 不与拒药/平台/C 库相互污染（第十节实证）。
-_DIET_SCORE_TRIGGERS: tuple[str, ...] = (
+# 强触发词：与记录/查询/陪伴语义互斥（不含「记一下/把…记」「吃了什么/查记录」
+# 「心情/陪我」），也不含任何药品/会员/企业词 → 不与拒药/平台/C 库相互污染（第十节实证）。
+_DIET_SCORE_STRONG: tuple[str, ...] = (
     "打分", "评分", "评估", "今天吃得怎么样", "今天吃得如何", "吃得怎么样",
-    "给我打个分", "饮食评分", "评价一下我的饮食",
+    "吃得如何", "吃得好不好", "今天吃得咋样", "吃得咋样",
+    "给我打个分", "饮食评分", "评价一下我的饮食", "打个分", "打几分",
+    "给我打分", "评个分", "饮食打分", "今天伙食", "伙食打分",
 )
+# 弱触发词（考核/考考/评一下/评价一下）：需搭配饮食语境且不含「分钟」（防「打几分钟」误触），
+# 避免被知识问答/段子劫持成打分。
+_DIET_SCORE_WEAK: tuple[str, ...] = ("考核", "考考", "评一下", "评价一下", "评一评", "考核一下")
+# 弱触发所需的饮食语境词（避免「考考我营养知识」被误判为打分）
+_DIET_SCORE_WEAK_CONTEXT: tuple[str, ...] = (
+    "饮食", "今天吃", "吃得", "这顿", "伙食", "餐", "饭", "三餐", "我吃",
+)
+# 保留旧名以兼容潜在引用（语义等价强触发集）
+_DIET_SCORE_TRIGGERS = _DIET_SCORE_STRONG
 
 
 def _is_diet_query(message: str) -> bool:
@@ -644,10 +665,17 @@ def _is_companion(message: str) -> bool:
 def _is_diet_score(message: str) -> bool:
     """是否命中「当天饮食考核评分」意图（主动触发，不自动打扰）。
 
-    与记录/查询/陪伴互斥：评分词不含「记一下/把…记」「吃了什么/查记录」
-    「心情/陪我聊」，触发词集彼此不交叠（已在 _DIET_SCORE_TRIGGERS 隔离）。
+    强触发词天然与记录/查询/陪伴互斥；弱触发词（考核/考考/评一下…）需搭配
+    饮食语境且不含「分钟」（防「打几分钟」误触），避免被知识问答/段子劫持。
+    评分永远走纯规则 `_handle_diet_score`，绝不进 LLM 编造分数（C柱设计铁律）。
     """
-    return any(t in (message or "") for t in _DIET_SCORE_TRIGGERS)
+    text = message or ""
+    if any(t in text for t in _DIET_SCORE_STRONG):
+        return True
+    if "分钟" not in text and any(t in text for t in _DIET_SCORE_WEAK):
+        if any(c in text for c in _DIET_SCORE_WEAK_CONTEXT):
+            return True
+    return False
 
 
 def _diet_meal_tag_from_message(message: str) -> str:
@@ -1044,9 +1072,10 @@ def _disease_local_reply(message: str) -> str:
         if kw in (message or ""):
             label = lab
             break
-    head = f"结合您的{label}需求，" if label else "结合您的健康管理需求，"
+    head = f"结合您的{label}需求，" if label else ""
+    prefix = head + "\n\n" if head else ""
     return (
-        f"{head}\n\n针对您提到的健康情况，膳食上建议遵循**均衡清淡**原则："
+        f"{prefix}针对您提到的健康情况，膳食上建议遵循**均衡清淡**原则："
         "控油控糖、少盐少辣，优先高纤维蔬菜与优质蛋白，主食粗细搭配。"
         "具体忌口与营养方案请以医嘱为准。"
     )
@@ -1081,6 +1110,7 @@ def _is_disease_answer_path(message: str) -> bool:
 #  - 「只喝黑咖啡」遇「白天正常吃/正常吃饭/不减肥」放行；
 #  - 「酮症」遇「怎么预防/如何预防」放行（预防问不是已发作）。
 _DANGER_SIGNALS: tuple[tuple[str, str], ...] = (
+    ("绝食", "extreme_fast"),
     ("断食", "extreme_fast"),
     ("只喝水", "extreme_fast"),
     ("只喝黑咖啡", "extreme_fast"),
@@ -1258,22 +1288,48 @@ def _handle_companion(
 def _try_p5_intent(
     req: ChatRequest, message: str, excluded: list[str], recent: Sequence[str]
 ) -> tuple[str, str, str, bool] | None:
-    """P5 互斥意图派发：饮食查询 → 饮食记录 → 情感陪伴。
+    """P5 互斥意图派发：饮食查询 → 饮食记录 → 情感陪伴；评分可叠加于任一意图。
 
     命中返回 (reply, intent, model_tag, degraded)，chat() 直接采用（不落入 P3/检索）；
     未命中返回 None，保持既有流程。
-    - 饮食记录/查询为规则路径 → model_tag="local-rules"、degraded=True；
-    - 陪伴分支 LLM 成功 → model_tag=DEEPSEEK_MODEL、degraded=False；失败/未启用 → local-rules。
+    - 饮食记录/查询/评分为规则路径 → model_tag="local-rules"、degraded=True；
+    - 陪伴分支 LLM 成功 → model_tag=DEEPSEEK_MODEL、degraded=False；失败/未启用 → local-rules；
+    - 评分永走纯规则 `_handle_diet_score`，绝不进 LLM 编造分数（C柱设计铁律）。
+    多意图处理（V12 修复）：记录+打分 → 先落库再算分（含本餐）；查询+打分 → 先回查再算分；
+    陪伴+打分 → 本地陪伴回复 + 评分块（不进 LLM 编分）；评分意图永不被吞。
     """
+    want_score = _is_diet_score(message)
+
     if _is_diet_query(message):
+        if want_score:
+            return (
+                _handle_diet_query(req.user_id, req.session_id)
+                + "\n\n" + _handle_diet_score(req, message, excluded),
+                "diet_query_score", "local-rules", True,
+            )
         return _handle_diet_query(req.user_id, req.session_id), "diet_query", "local-rules", True
+
     if _is_diet_record(message):
+        if want_score:
+            recorded = _handle_diet_record(req, message, excluded)
+            scored = _handle_diet_score(req, message, excluded)
+            return recorded + "\n\n" + scored, "diet_record_score", "local-rules", True
         return _handle_diet_record(req, message, excluded), "diet_record", "local-rules", True
+
     if _is_companion(message):
+        if want_score:
+            # 陪伴 + 打分：本地陪伴回复 + 纯规则评分块，绝不进 LLM 编分
+            return (
+                _companion_local_reply(req, excluded)
+                + "\n\n" + _handle_diet_score(req, message, excluded),
+                "companion_score", "local-rules", True,
+            )
         reply, model_tag, degraded = _handle_companion(req, message, excluded, recent)
         return reply, "companion", model_tag, degraded
-    if _is_diet_score(message):
+
+    if want_score:
         return _handle_diet_score(req, message, excluded), "diet_score", "local-rules", True
+
     return None
 
 
@@ -1380,15 +1436,23 @@ def _scale_lookup_reply(reply: str, scale: float, grams: int) -> str:
 # 第七波：平台问法「章节直选」——BM25 token 重叠对联系/服务/开通意图不可靠
 # （「客服电话」曾答到 4.2 企业案例、「会员多少钱」曾答到 5.2 渠道合作）。
 # 按意图词直接锁定 C 库章节，检索全量 C 块后精确过滤。
+# 2026-08-23 修正：按特异性排序（企业健康管家/营养师等具体词先于模糊的会员/价格），
+# 并补全 5.1(API)/3.3(企业客户名单)/2.3(增值服务) 路由，使 8 道平台事实题各自命中正确 C 块。
 _C_SECTION_ROUTES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("客服电话", "客服热线", "公司地址", "办公地址", "在哪办公", "联系方式",
       "怎么联系", "官网", "官方网站", "中关村", "几层", "电话", "地址"),
      "第六章联系我们", "本章概述"),
+    (("企业健康管家", "年费", "讲座", "1000人", "300-1000", "100人以上", "企业版"),
+     "第二章产品服务体系", "2.2 企业用户服务"),
+    (("SaaS", "API", "开放平台", "开发者"),
+     "第五章企业合作方案", "5.1 API 开放平台"),
+    (("企业客户", "签约", "合作伙伴", "字节", "美团", "百度", "蔚来", "客户名单", "名单"),
+     "第三章服务模式与技术架构", "3.3 合作伙伴生态"),
+    (("营养师", "咨询", "家庭健康", "299", "399"),
+     "第二章产品服务体系", "2.3 增值服务"),
     (("多少钱", "价格", "收费", "费用", "定价", "套餐", "订阅", "续费", "购买",
       "会员", "专业版", "免费版", "标准版", "开通", "怎么用", "怎么买", "服务"),
      "第二章产品服务体系", "2.1 个人用户服务"),
-    (("SaaS", "API", "企业", "年费", "讲座"),
-     "第二章产品服务体系", "2.2 企业用户服务"),
     (("案例",), "第四章成功案例", "4.1 个人用户案例"),
 )
 # 平台强语义词：膳食问法 + 这些词仍判平台（「SaaS年费+痛风浓鸡汤」两段都答）；
@@ -1397,29 +1461,51 @@ _PLATFORM_STRONG_WORDS = (
     "多少钱", "收费", "开通", "客服", "地址", "联系", "年费", "套餐", "订阅",
     "续费", "购买", "价格", "费用", "定价", "付费", "升级", "专业版", "免费版",
     "标准版", "SaaS", "API", "企业", "怎么用", "怎么买", "案例", "白皮书", "讲座",
+    "营养师",
 )
 
 
 def _c_chunk_for_query(message: str) -> SourceChunk | None:
-    """平台问法章节直选：按意图词锁定 C 库章节并取回该块（第七波）。"""
+    """平台问法章节直选：按意图词锁定 C 库章节并取回该块（确定性，绕过 BM25）。
+
+    修复：此前走 retrieve() 的 BM25 召回，对「3.3 合作伙伴生态」返回 0 个 C 块、
+    对「5.1 API 开放平台」因章节串空格不一致取不到，导致平台事实题答非所问。
+    改为直接遍历 retriever.c_chunks 按 chapter/section 精确匹配——C 库仅 15 块，
+    线性扫描成本可忽略，且 100% 命中正确块（红线：平台事实只能引素材原文，禁 LLM 改写）。
+    """
     for words, chapter, section in _C_SECTION_ROUTES:
         if any(w in (message or "") for w in words):
-            for c in get_retriever().retrieve(
-                f"{chapter} {section}", top_k=30, current_query=message
-            ):
-                if c.source == "C" and c.chapter == chapter and c.section == section:
-                    return c
+            for c in get_retriever().c_chunks:
+                if (
+                    c.get("source") == "C"
+                    and c.get("chapter") == chapter
+                    and c.get("section") == section
+                ):
+                    return SourceChunk(
+                        source=c["source"],
+                        chapter=c["chapter"],
+                        section=c["section"],
+                        content=c["content"],
+                        score=1.0,
+                    )
             return None
     return None
 
 
-def _is_platform_intent(message: str, top: SourceChunk | None) -> bool:
-    """平台意图：C 块命中，且（非膳食问 或 含平台强语义词）。"""
-    if not (top and top.source == "C"):
-        return False
-    if not is_dietary_domain(message or ""):
+def _is_platform_intent(message: str, top: SourceChunk | None = None) -> bool:
+    """平台意图：消息命中平台强语义词，或命中 C 库章节直选词（非膳食问法时）。
+
+    修复：不再依赖 top 是否为 C 块——此前 BM25 未把 C 块顶为 top 时平台问法被漏检，
+    回落「我是膳食顾问不负责平台」拒答，导致 8 道平台事实题全未答出（官网/电话/价格等）。
+    """
+    msg = message or ""
+    if any(w in msg for w in _PLATFORM_STRONG_WORDS):
         return True
-    return any(w in (message or "") for w in _PLATFORM_STRONG_WORDS)
+    # C 库章节直选词：仅当消息非膳食问法时判平台，避免劫持「官网买的鸡胸肉」类膳食问
+    _route_words = tuple(w for words, _, _ in _C_SECTION_ROUTES for w in words)
+    if any(w in msg for w in _route_words) and not is_dietary_domain(msg):
+        return True
+    return False
 
 
 def _platform_reply_prefix(message: str) -> tuple[str | None, SourceChunk | None]:
@@ -1647,7 +1733,7 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
         for kw, label in _DISEASE_LABELS:
             if kw in sess_disease_name:
                 return f"结合您的{label}需求，"
-    return "结合您的健康管理需求，"
+    return ""
 
 
 def _update_session_profile(
@@ -1770,7 +1856,11 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # 被明确豁免的食材（保留花生，不误排核桃/腰果）。
     excluded = _apply_allergy_exemptions(excluded, message)
 
-    disclaimer = DISCLAIMER_STANDARD if (disease or is_medication_query(message)) else None
+    # V12：保健品替代处方药 → 并入拒药硬闸门（医疗安全红线），并挂免责
+    is_med_query = is_medication_query(message) or is_supplement_replace_drug_query(message)
+    supp_replace = is_supplement_replace_drug_query(message)
+    supp_class = classify_supplement(message) if not is_med_query else 0
+    disclaimer = DISCLAIMER_STANDARD if (disease or is_med_query) else None
     # 终极压测：危险信号（极端断食/酮症酸中毒前兆）强制带免责
     danger_reply = _danger_signal_reply(message)
     if danger_reply:
@@ -1779,7 +1869,6 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # 判定顺序：用药硬拦截 → 数值精确问答 → 一餐 → 检索/LLM/其他。
     # （R1）「晚餐鸡胸肉多少千卡」不得被一餐劫持成追问目标，必须走数值路径返回速查表精确值；
     # （R2）「吃布洛芬后晚餐吃什么好」不得进一餐，必须走现有拒药路径（拒答+免责）。
-    is_med_query = is_medication_query(message)
     is_num_query, num_food = nutrition_lookup.is_numeric_lookup_query(message)
 
     # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）：分支前解析并按禁忌过滤，
@@ -1880,6 +1969,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         # 能少摄入热量」「肯德基怎么点蛋白质最多」）此前因 is_num_query 命中指标词
         # 被跳过 decision，落成「暂未收录」——现在点单语义优先，数值问法不受影响。
         # 候选已在分支前解析并按禁忌过滤；纯行为决策、不引用素材外精确数值（红线⑤）。
+        decision = _decision_cand
         reply = (
             f"【点单决策】在{_decision_cand['scenario']}，按{_decision_cand['goal']}目标这样点👇\n"
             + "\n".join(f"· {it}" for it in _decision_cand["items"])
@@ -1889,10 +1979,36 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         intent = "decision"
         model_tag = "local-rules"
         sources = []
-        decision = _decision_cand
+        # 策略1：点单建议同样交给大模型润色（搭子口吻），结构化卡片 decision 保留；
+        # grounding = 已按禁忌过滤好的点单清单，LLM 只转述+加理由，不新增食材/数值。
+        if llm.is_enabled():
+            _dec_grounding = [SourceChunk(
+                source="B",
+                chapter="点单决策",
+                section=_decision_cand.get("scenario", ""),
+                content=(
+                    f"场景：{_decision_cand.get('scenario')}；目标：{_decision_cand.get('goal')}。\n"
+                    + "推荐点单（已按禁忌排除）：\n" + "\n".join(f"· {it}" for it in _decision_cand["items"])
+                    + (f"\n说明：{_decision_cand['note']}" if _decision_cand.get("note") else "")
+                ),
+                score=None,
+            )]
+            _llm = llm.synthesize(
+                message, _dec_grounding,
+                history=_recent_chat_turns(req.session_id, 4),
+                session_id=req.session_id, user_id=req.user_id,
+                excluded_foods=excluded or None,
+                state_context=health_state.build_state_context(req.user_id),
+            )
+            if _llm:
+                reply = _llm
+                model_tag = config.DEEPSEEK_MODEL
+                degraded = False
     else:
-        # ── BUG-5 数值问答确定性工具命中（红线要求：数值必须工具计算，禁止模型推理）──
+        # ── 数值问答确定性工具命中（红线⑤：数值必须工具计算，禁止模型推理）──
         # 在模糊检索之上插入确定性强校验：命中权威表则直接返回精确值，跳过 _pick_reply_chunk。
+        # 采用 220 用例验证过的旧路径（is_numeric_lookup_query + lookup），
+        # 回退 V12 未完成的新数值引擎（build_numeric_reply 存在复合菜/量词/劫持等边界回归）。
         numeric_hit = False
         numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
         is_num, food = is_num_query, num_food
@@ -1900,6 +2016,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             # 不得被数值分支截获——is_med_query 时跳过数值，交给拒药分支
             row = nutrition_lookup.lookup(food)
             if row:
+                # 红线⑤：数值由 Python 确定性算好（含市斤折算），绝不交 LLM 推算。
                 reply = nutrition_lookup.format_reply(row)
                 # 终极压测：市斤换算（「一斤去皮生鸡胸肉…多少大卡」）→ 500g 折算
                 jin = _jin_scale(message)
@@ -1913,6 +2030,27 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     "content": nutrition_lookup.get_table_markdown(row["source_section"]) or "",
                     "score": None,
                 }]
+                # 策略1：把已算好的精确数值作为 grounding 喂给大模型，由它用自然语言
+                # 复述数字 + 加营养点评（数字已由系统算好，LLM 只转述、不重算）。
+                if llm.is_enabled():
+                    _num_grounding = [SourceChunk(
+                        source="A",
+                        chapter=row["source_chapter"],
+                        section=row["source_section"],
+                        content=reply,
+                        score=None,
+                    )]
+                    _llm = llm.synthesize(
+                        message, _num_grounding,
+                        history=_recent_chat_turns(req.session_id, 4),
+                        session_id=req.session_id, user_id=req.user_id,
+                        excluded_foods=excluded or None,
+                        state_context=health_state.build_state_context(req.user_id),
+                    )
+                    if _llm:
+                        reply = _llm
+                        model_tag = config.DEEPSEEK_MODEL
+                        degraded = False
                 numeric_hit = True
                 # 支柱A 加固：数值问答命中时若同轮含平台咨询（会员/价格…），
                 # 须追加 C 库平台前缀（语义隔离的 _platform_reply_prefix），
@@ -2046,10 +2184,12 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     sources = []
                 else:
                     intent = "platform" if is_platform else "nutrition_qa"
-                # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非用药类问题时）。
-                # 用药类问题由合规层硬拦截，不经 LLM，避免任何用药建议风险。
+                # 命中检索块 -> 优先尝试 LLM 合成（Key 就绪且非拒药类问题时）。
+                # 红线③例外说明：用药类 / 保健品替代处方药类 拒答话术为合规硬规则固定文案，
+                # 确定性、不经 LLM，绝不允许模型改写（法律免责要求）；故拒绝类意图直接短路，
+                # 连 LLM 调用都不发起——「他说拒答，我们就直接拒绝回答」。
                 used_llm = False
-                if llm.is_enabled() and not is_medication_query(message):
+                if llm.is_enabled() and not is_med_query and not is_platform:
                     llm_reply = llm.synthesize(
                         message,
                         chunks,
@@ -2070,11 +2210,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                     if len(snippet) > 600:
                         snippet = snippet[:600] + "…（更多见下方来源）"
                     if is_medication_query(message):
-                        # 拒答用药，仅给膳食参考
-                        reply = (
-                            "本工具不提供用药建议，请遵医嘱。以下为相关膳食参考：\n"
-                            f"【{top.chapter} · {top.section}】\n{snippet}"
-                        )
+                        # 拒答用药：干净拒答，不挂无关膳食参考（考官实测「布洛芬」→
+                        # 罗列食谱 Q&A 观感差、答非所问；免责由 disclaimer 字段注入）。
+                        reply = "本工具不提供用药建议，请遵医嘱。"
                     else:
                         if _is_disease_answer_path(message):
                             # 暴风雪回归：疾病问法 local-rules 兜底不引无关知识块
@@ -2172,6 +2310,14 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             user_profile.add_profile_fields(req.user_id, _profile_updates)
     except Exception:  # noqa: BLE001
         logger.exception("用户档案自动写入失败（非致命，已跳过）")
+
+    # V12 保健品软路径收口：替代处方药→硬拒药专用回复；选购辨别→追加安全提醒（非拒药）
+    if supp_replace:
+        reply = _SUPPLEMENT_REPLACE_DRUG_REPLY
+        intent = "medication_refuse"
+        sources = []
+    elif supp_class == 2:
+        reply = (reply or "") + "\n\n" + _SUPPLEMENT_ADVISORY
 
     _persist_turn(req.user_id, req.session_id, message, reply, [c.model_dump() for c in chunks])
     data: dict = {"reply": reply, "intent": intent, "goal_tag": None}

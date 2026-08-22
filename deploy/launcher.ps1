@@ -1,4 +1,4 @@
-﻿# HealthPick 一键启动器：进入交互端（密钥由「更新密钥.bat」管理，本脚本只读取不询问）
+﻿# HealthPick 一键启动器：进入交互端（密钥直接编辑 deploy/.env 填写，本脚本只读取不询问）
 # 功能：① 读取 deploy/.env 密钥（有→真 AI；无→本地规则降级）→ ② 自动启动（Docker 优先，Python 兜底）→ ③ 打开浏览器
 # 换电脑可用：所有路径由脚本所在目录推导，零硬编码物理路径。
 $ErrorActionPreference = 'Stop'
@@ -30,7 +30,7 @@ if ($existing) {
     $masked = $existing.Substring(0, [Math]::Min(8, $existing.Length))
     Write-OK ("已读取密钥（" + $masked + "...），启动真 AI 模式")
 } else {
-    Write-Warn "未配置密钥：将用本地规则模式启动（功能完整）。如需真 AI，先双击「更新密钥.bat」粘贴密钥。"
+    Write-Warn "未配置密钥：将用本地规则模式启动（功能完整）。如需真 AI，请打开 deploy\.env 文件，填入 DEEPSEEK_API_KEY=你的密钥。"
 }
 
 # ── 2) 启动服务（Docker 优先，Python 兜底）─────────────────
@@ -82,6 +82,6 @@ else { Write-Warn "服务启动中（浏览器将自动打开）" }
 Start-Process "http://localhost:$PORT"
 Write-Host ""
 Write-Host ("已打开交互页面：http://localhost:" + $PORT) -ForegroundColor Green
-Write-Host "如需更换密钥，请双击「更新密钥.bat」。"
+Write-Host "如需更换密钥，请编辑 deploy\.env 文件后重新双击本脚本。"
 Write-Host ""
 Read-Host "按回车退出"

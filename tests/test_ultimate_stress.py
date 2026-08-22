@@ -123,10 +123,11 @@ def test_sugar_normal_range_keeps_disclaimer(client):
 
 
 def test_guide_not_duplicated(client):
-    """疾病引导语不得重复拼接（失眠场景曾出现两连「结合您的…」）。"""
+    """疾病引导语不得重复拼接（失眠场景曾出现两连「结合您的…」）。
+    策略1：无具体疾病标签时不再硬塞「结合您的…」固定引导语，故此处只保证不重复（≤1 次）。"""
     r = _chat(client, "昨晚失眠只睡了4个小时，今天怎么吃能保持下午精力？", "us_sleep")
     rr = str(r["data"]["reply"])
-    assert rr.count("结合您的") == 1, f"引导语重复: {rr[:80]!r}"
+    assert rr.count("结合您的") <= 1, f"引导语重复: {rr[:80]!r}"
 
 
 def test_control_sugar_this_turn_disclaimer(client):
