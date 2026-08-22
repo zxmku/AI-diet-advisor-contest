@@ -93,3 +93,37 @@ def test_chitchat_offdomain_has_no_sources(client):
         "user_id": "u", "session_id": "ext_off", "message": "世界首富是谁"}).json()["data"]
     assert d["intent"] == "chitchat"
     assert d.get("sources") in (None, [], [None])
+
+
+# ═══ 暴风雪压力测试回归（2026-08-22 夜，100 条攻击式指令实测挖出的 4 缺陷）═══
+
+def test_numeric_measure_word_stripped(client):
+    """「鸡胸肉每100克有多少千卡」→ 量词剥离 → 命中 165（此前提取成「鸡胸肉每100」诚实 miss）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_measure", "message": "鸡胸肉每100克有多少千卡和蛋白质？"}).json()["data"]
+    assert d["intent"] == "nutrition_lookup", f"应数值命中，实际 {d['intent']}"
+    assert "165" in str(d.get("reply") or ""), "应含 165"
+
+
+def test_medication_not_hijacked_by_numeric(client):
+    """「头孢克肟吃完后几天不能喝酒」→ 拒药优先于数值分支（此前走 numeric miss 漏拒药）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_cef", "message": "头孢克肟吃完后几天不能喝酒？"}).json()["data"]
+    assert d["intent"] == "medication_refuse", f"应拒药，实际 {d['intent']}"
+    assert "不提供用药建议" in str(d.get("reply") or "")
+
+
+def test_offdomain_not_numeric_miss(client):
+    """「世界首富马斯克今天吃什么」→ 非膳食走闲聊（此前数值 miss 答「暂未收录「世界首富马斯」」）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_musk", "message": "世界首富马斯克今天吃什么？"}).json()["data"]
+    assert d["intent"] == "chitchat", f"应走闲聊，实际 {d['intent']}"
+    assert "暂未收录" not in str(d.get("reply") or "")
+
+
+def test_negation_normal_sugar_not_guide(client):
+    """「我没有糖尿病，血糖一切正常」→ 不触发控糖引导语（此前「血糖一切正常」漏剥离）。"""
+    d = client.post("/api/chat", json={
+        "user_id": "u", "session_id": "bz_neg", "message": "我没有糖尿病，血糖一切正常，给我推荐个减脂食谱"}).json()["data"]
+    assert "结合您的控糖需求" not in str(d.get("reply") or ""), "否定句不得贴控糖引导"
+    assert "血糖" not in str(d.get("reply") or "")[:20], "回复开头不应提血糖"

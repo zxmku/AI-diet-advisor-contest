@@ -1266,7 +1266,8 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         numeric_hit = False
         numeric_miss = False  # 数值意图命中但表中无该食材：诚实告知，不臆测、不回退 BM25
         is_num, food = is_num_query, num_food
-        if is_num and food:
+        if is_num and food and not is_med_query:  # V01 扩展：用药问题（如「头孢克肟…几天」）
+            # 不得被数值分支截获——is_med_query 时跳过数值，交给拒药分支
             row = nutrition_lookup.lookup(food)
             if row:
                 reply = nutrition_lookup.format_reply(row)
@@ -1287,13 +1288,19 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 numeric_miss = len(food) >= 2 and any("\u4e00" <= ch <= "\u9fff" for ch in food)
 
         if numeric_miss:
-            reply = (
-                f"【营养速查表】表中暂未收录「{food}」的精确营养数据，无法给出确定数值，恕不臆测。\n"
-                "您可以换问表中已有食材（如鸡胸肉、糙米、西兰花、三文鱼、鸡蛋等），"
-                "或告诉我您想了解的营养维度（热量 / 蛋白质 / 脂肪 / 碳水）。"
-            )
-            intent = "nutrition_lookup_miss"
-            sources = []
+            # 暴风雪测试回归：非膳食问法（如「世界首富马斯克今天吃什么」）误入
+            # 数值 miss 时不得回 miss——交给下方领域门控走闲聊，避免答
+            # 「暂未收录「世界首富马斯」」；膳食问法（如「牛油果」）保持诚实 miss。
+            if is_dietary_domain(message):
+                reply = (
+                    f"【营养速查表】表中暂未收录「{food}」的精确营养数据，无法给出确定数值，恕不臆测。\n"
+                    "您可以换问表中已有食材（如鸡胸肉、糙米、西兰花、三文鱼、鸡蛋等），"
+                    "或告诉我您想了解的营养维度（热量 / 蛋白质 / 脂肪 / 碳水）。"
+                )
+                intent = "nutrition_lookup_miss"
+                sources = []
+            else:
+                numeric_miss = False
 
         if not numeric_hit and not numeric_miss:
             # 领域路由门控：区分「膳食顾问需求」与「闲聊/非膳食」。
