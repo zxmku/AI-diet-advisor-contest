@@ -151,3 +151,26 @@ def test_no_allergy_block_for_normal_user(client):
     """未声明过敏的用户问同类问题不得被拦截（对照回归）。"""
     r = _chat(client, "花生酱能配全麦面包吃吗", session_id="s_ctrl_norm")
     assert r["data"]["intent"] != "allergy_block", "未声明过敏不得拦截花生酱"
+
+
+# ── 豁免逻辑守卫（2026-08-23 考官独立验证修复）：疑问句绝不触发豁免 ──
+def test_allergy_exemption_question_not_exempt(client):
+    """问禁忌食材（X能吃吗）不得被豁免逻辑误判为'X可以吃'而放行。"""
+    _chat(client, "我对花生过敏", session_id="s_ex_q")
+    r = _chat(client, "花生能吃吗", session_id="s_ex_q")
+    assert r["data"]["intent"] == "allergy_block", f"问禁忌食材必须拦截: {r['data']['intent']}"
+
+
+def test_allergy_exemption_question_shrimp(client):
+    """单字食材（虾）问法也必须拦截（虾能吃吗 → allergy_block）。"""
+    _chat(client, "我对虾过敏", session_id="s_ex_shrimp")
+    r = _chat(client, "虾能吃吗", session_id="s_ex_shrimp")
+    assert r["data"]["intent"] == "allergy_block", f"虾能吃吗必须拦截: {r['data']['intent']}"
+
+
+
+def test_allergy_exemption_statement_peanut_kept(client):
+    """豁免陈述（但核桃没事）后：核桃豁免、花生仍拦截（当轮语义）。"""
+    _chat(client, "我对花生过敏但核桃没事", session_id="s_ex_stmt2")
+    r = _chat(client, "花生能吃吗", session_id="s_ex_stmt2")
+    assert r["data"]["intent"] == "allergy_block", "花生仍过敏必须拦截"

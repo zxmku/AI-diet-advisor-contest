@@ -361,6 +361,8 @@ def _mention_excluded_food(message: str, excluded: Sequence[str]) -> str | None:
 
     匹配策略：① 速查表食材名（精确/包含）；② 禁忌排除清单食材名（如虾仁/花生
     等禁忌词）；命中且该食材在 excluded 中 → 返回该食材名，否则 None。
+    2026-08-23 考官独立验证修复：支持**单字食材**（虾/蟹/鱼/蛋）——「虾能吃吗」
+    必须拦截；单字匹配要求前后非汉字（独立成词），「虾片/虾皮」不误伤。
     """
     if not excluded:
         return None
@@ -374,11 +376,39 @@ def _mention_excluded_food(message: str, excluded: Sequence[str]) -> str | None:
     for f in excluded:
         if f and len(f) >= 2 and f in text:
             candidates.append(f)
+    # 单字食材（虾/蟹/鱼/蛋等）：从 excluded 多字词提取族首字 + 常见族单字别名
+    # 双路合并（「螃蟹」首字是「螃」，「蟹」需显式补；「虾」「鱼」「贝」同理）。
+    # 独立判定：单字后紧跟「动词/助词/标点/句尾」（能/可/要/想/呢/吗/吃/是/，/。/
+    # 空格/结束）视为独立食材；后接名词性汉字（片/皮/棒/仁/黄/白/炒/煮…）是复合
+    # 词的一部分，不匹配（「虾片/虾皮/蟹棒/蛋黄/蛋白/蛋炒饭」不误伤）。
+    single_aliases: set[str] = set()
+    for f in excluded:
+        if len(f) >= 2 and len(f) <= 3:
+            single_aliases.add(f[0])
+    # 常见族单字别名（与 excluded 词首字互补）：虾/蟹/鱼/贝/蛤/蚝/参/螺
+    for alias in ("虾", "蟹", "鱼", "贝", "蛤", "蚝", "螺"):
+        single_aliases.add(alias)
+    _SINGLE_AFTER_OK = set("能可要想呢吗吃是喝煮炒蒸煎拌炖加配放当作有没有呢吧了啊，。！？、 　")
+    for alias in single_aliases:
+        if alias not in text:
+            continue
+        for mm in re.finditer(re.escape(alias), text):
+            s, e = mm.span()
+            after = text[e] if e < len(text) else ""
+            # 后跟动词/助词/标点/句尾 → 独立食材；后跟名词性汉字 → 复合词不匹配
+            if after == "" or after in _SINGLE_AFTER_OK:
+                candidates.append(alias)
+                break
     # 最长优先：三文鱼 不被「鱼」抢先，花生酱 命中「花生」
     for cand in sorted(set(candidates), key=len, reverse=True):
         if _is_food_excluded(cand, excluded_set):
             return cand
     return None
+
+
+def _is_han(ch: str) -> bool:
+    """字符是否 CJK 汉字（用于单字食材的独立成词判断）。"""
+    return bool(ch) and "\u4e00" <= ch <= "\u9fff"
 
 
 _REDACT_MARK = "（已按禁忌剔除）"
@@ -1262,21 +1292,39 @@ def _apply_allergy_exemptions(excluded: list[str], message: str) -> list[str]:
     排除时，明确豁免的核桃/腰果不得误排；只保留用户真正过敏的花生。
     第七波：豁免判定改**双向包含**——「我海鲜过敏，但鱼没事」的豁免块「鱼」是
     多字食材（三文鱼/鳕鱼）的子串，原 `f in block` 单向匹配不到（豁免失效）。
+    2026-08-23 考官独立验证修复：疑问句（「X能吃吗/可以吃吗」）**绝不触发豁免**——
+    「花生能吃吗」是问禁忌食材（应拦截），不是声明「花生可以吃」。豁免只认
+    明确陈述句（不带「吗」）；带「吗/？/？」的问句一律跳过豁免，保持排除清单。
     """
     if not excluded:
         return excluded
     text = message or ""
-    raw_blocks = re.findall(r"([\u4e00-\u9fff]{1,8}?)(?:不过敏|没事|可以吃|能吃)", text)
+    # 豁免块捕获（2026-08-23 考官独立验证修复，四次修正）：
+    # ① 转折词「但/不过/而/就/只」之后捕获（「对花生过敏但核桃不过敏」→「核桃」），
+    #    且块内禁止逗号/句号/顿号——「海鲜过敏，但鱼没事」的逗号分隔过敏声明与
+    #    豁免声明，块内出现逗号必是跨句误捕获（旧版捕获「敏，但鱼」→ 清洗后含
+    #    「但」被清成「敏鱼」→ 豁免失效）；
+    # ② 块内禁止含「过」——「过敏」以「过」开头，块内出现「过」= 卷进了过敏声明；
+    # ③ 疑问判别在锚点后：豁免块后紧跟「吗/？/?」才是疑问（「核桃没事吗」），
+    #    「但鱼没事，能推荐吗」豁免块后是逗号，豁免仍有效。
+    raw_blocks = re.findall(
+        r"(?:但是|不过|但|而|就|只|然而|可是)?([^过，。、！？?\s]{1,6}?)(?:不过敏|没事|可以吃|能吃)([吗？?]?)",
+        text,
+    )
     if not raw_blocks:
         return excluded
-    # 第七波：豁免块清洗连接词/动词（「但鱼没事」→「鱼」；「吃鱼没事」→「鱼」），
-    # 否则「但」/「吃」混入块导致双向包含匹配失败（豁免失效）。
     blocks = []
-    for b in raw_blocks:
-        for junk in ("但是", "不过", "但", "而", "就", "只", "吃", "喝", "觉得"):
+    for b, qmark in raw_blocks:
+        if qmark:
+            continue  # 豁免块后紧跟「吗/？/?」= 疑问（「核桃没事吗」），不豁免
+        for junk in ("但是", "不过", "但", "而", "就", "只", "然而", "可是", "吃", "喝", "觉得"):
             b = b.replace(junk, "")
-        if b:
-            blocks.append(b)
+        # 块内含「过敏」= 把前面的过敏声明卷进来了，丢弃（豁免语义必须是无过敏）
+        if not b or "过敏" in b or "对" in b:
+            continue
+        blocks.append(b)
+    if not blocks:
+        return excluded
     keep: list[str] = []
     for f in excluded:
         # 双向包含（第七波）：豁免块「鱼」→ 多字食材「三文鱼/鳕鱼」子串，
@@ -2151,7 +2199,10 @@ def chat(req: ChatRequest) -> UnifiedResponse:
             # 花生酱吗」「花生能吃吗」→ 必须直接拦截，不得落入检索答非所问。
             # 仅对"能吃/可以吃/想吃什么"类问法拦截，避免营养查询误伤
             # （如「螃蟹多少千卡」是查询不是吃）。
+            # 2026-08-23 修复：负向后瞻排除「不能吃/不吃/不想吃」——那是禁忌声明
+            # （应记录），不是问禁忌食材（应拦截）。
             _ask_about_eat = re.search(
+                r"(?<!不)(?<!不(?=想))(?<!不(?=能))(?<!没)(?<!别)(?<!勿)"
                 r"(能吃|可以吃|能吃吗|可以吃吗|想吃|能不能吃|能吃.*吗|能炒|能煮|能蒸|"
                 r"能炸|能做|能放|能加|能配|能拌|能喝|能当|能作|能生吃|能直接吃|"
                 r"吃.*可以吗|来.*花生|可以.*吗|能不能.*吗)", message)
