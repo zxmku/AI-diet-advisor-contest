@@ -463,9 +463,13 @@ let ttsEnabled = localStorage.getItem('hp_tts') !== '0';   // 默认开；关掉
 let ttsHealthy = false;  // 健康状态：页面加载时探测 /health.tts_available
 let currentAudio = null;      // 当前播放实例（防串音：新音频响起前强制停旧）
 let currentAudioUrl = null;   // 当前播放的 blob URL（停旧时及时释放内存）
+let ttsGen = 0;               // 代际计数：每次打断/新播报递增，作废所有「在途」旧音频
 
-// 立即停止当前播报并释放资源（串音根治：发送/开关/新音频到达时调用，旧音频即刻闭嘴）
+// 立即停止当前播报 + 作废所有在途 TTS 请求（串音根治）
+// 关键：ttsGen++ 让仍在 fetch 的旧音频响应回来后直接丢弃（旧音频还没创建实例时，
+// 仅靠 currentAudio.pause() 拦不住——那是「发送没打断、两个一起播」的真正原因）
 function stopTTS(){
+  ttsGen++;
   if(currentAudio){
     currentAudio.pause();
     currentAudio.onended = null;
@@ -477,16 +481,17 @@ function stopTTS(){
 
 function speakText(text){
   if(!text) return Promise.resolve();
+  const gen = ++ttsGen;  // 本次播报开启新一代：作废之前所有在途/待播音频
   return fetch('/api/tts', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ text })
   }).then(async r => {
     if(!r.ok){ ttsHealthy=false; updateTTS(); return; }
-    // 新音频就绪后才停旧：上一段没播完也强制中断，杜绝两段重叠串音；
-    // 若本次请求失败（!r.ok）则旧音频不受影响、继续播放。
-    stopTTS();
+    if(gen !== ttsGen) return;  // 请求在途期间被打断（发送/开关/新回复）→ 丢弃，不播
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
+    if(gen !== ttsGen){ URL.revokeObjectURL(url); return; }  // blob 转换期间被打断 → 释放丢弃
+    stopTTS();
     const a = new Audio(url);
     currentAudio = a;
     currentAudioUrl = url;
