@@ -41,6 +41,7 @@ from app.api.schemas import (
 from app.compliance import (
     ALLERGY_FOLLOWUP,
     DISCLAIMER_STANDARD,
+    DISCLAIMER_TABOO,
     _load_taboos,
     classify_supplement,
     detect_allergies,
@@ -2296,8 +2297,9 @@ def chat(req: ChatRequest) -> UnifiedResponse:
         # 就无条件展示，导致「一边推荐白煮蛋、一边提示已排除鸡蛋」的自相矛盾。
         was_redacted = _REDACT_MARK in reply
         if was_redacted or meal is not None or decision is not None or new_allergies:
-            # 确认排除提示保留在 reply 尾部（追问之后），列全清单供用户知晓。
+            # 赛题第42行要求：禁忌排除时必须提示「建议您在使用本方案前咨询专业医师或注册营养师」
             reply += f"\n\n⚠️ 已按您的禁忌排除以下食材：{', '.join(excluded)}"
+            reply += f"\n\n{DISCLAIMER_TABOO}"
 
     # AI 自动维护用户档案（UI 端不可人工编辑，由 AI 从对话中自动识别写入）：
     # 规则检测（仅第一人称陈述，问句/第三人称不提取）→ 字段级去重写入
