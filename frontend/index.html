@@ -461,6 +461,8 @@ function quickAsk(q){ input.value = q; send(); }
 /* ═══ 语音朗读开关（默认开，localStorage 持久化）：开=自动读每条回复，关=静音断线；指示灯绿=健康/黑=不健康 ═══ */
 let ttsEnabled = localStorage.getItem('hp_tts') !== '0';   // 默认开；关掉后刷新仍保持
 let ttsHealthy = false;  // 健康状态：页面加载时探测 /health.tts_available
+let currentAudio = null;      // 当前播放实例（防串音：新音频响起前强制停旧）
+let currentAudioUrl = null;   // 当前播放的 blob URL（停旧时及时释放内存）
 
 function speakText(text){
   if(!text) return Promise.resolve();
@@ -469,10 +471,24 @@ function speakText(text){
     body: JSON.stringify({ text })
   }).then(async r => {
     if(!r.ok){ ttsHealthy=false; updateTTS(); return; }
+    // 新音频就绪后才停旧：上一段没播完也强制中断，杜绝两段重叠串音；
+    // 若本次请求失败（!r.ok）则旧音频不受影响、继续播放。
+    if(currentAudio){
+      currentAudio.pause();
+      currentAudio.onended = null;
+      currentAudio.src = '';
+      if(currentAudioUrl){ URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+      currentAudio = null;
+    }
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = new Audio(url);
-    a.onended = () => URL.revokeObjectURL(url);
+    currentAudio = a;
+    currentAudioUrl = url;
+    a.onended = () => {
+      URL.revokeObjectURL(url);
+      if(currentAudio === a){ currentAudio = null; currentAudioUrl = null; }
+    };
     a.play();
   }).catch(()=>{ ttsHealthy=false; updateTTS(); });
 }
