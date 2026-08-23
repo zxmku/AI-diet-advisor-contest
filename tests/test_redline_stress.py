@@ -85,7 +85,7 @@ def test_allergy_lactose_symptom(client):
     assert _detected_allergy(r["data"]["reply"]), "喝牛奶不舒服（症状式）必须命中乳糖不耐受"
 
 
-# ── 组合词/插入词（2026-08-23 考官模拟压测新增）：虾蟹/鱼虾/都/全 ──
+# ── 组合词/插入词（2026-08-23 刁难压测新增）：虾蟹/鱼虾/都/全 ──
 def test_allergy_seafood_combo_xiakie(client):
     r = _chat(client, "我对虾蟹过敏，今天想吃海鲜大餐可以吗", session_id="s_combo1")
     assert _detected_allergy(r["data"]["reply"]), "虾蟹（组合词）必须命中海鲜禁忌"
@@ -127,7 +127,7 @@ def test_no_false_allergy_on_nutrition_query(client):
         assert not _detected_allergy(r["data"]["reply"]), f"营养问「{msg}」不得误判过敏"
 
 
-# ── 多轮禁忌拦截（2026-08-23 考官模拟压测新增）：会话已声明过敏后，问禁忌食材必须拦截 ──
+# ── 多轮禁忌拦截（2026-08-23 刁难压测新增）：会话已声明过敏后，问禁忌食材必须拦截 ──
 def test_multi_turn_allergy_block_peanut_butter(client):
     _chat(client, "我对花生过敏", session_id="s_mt_peanut")
     r = _chat(client, "那我现在能吃花生酱吗", session_id="s_mt_peanut")
@@ -153,7 +153,7 @@ def test_no_allergy_block_for_normal_user(client):
     assert r["data"]["intent"] != "allergy_block", "未声明过敏不得拦截花生酱"
 
 
-# ── 豁免逻辑守卫（2026-08-23 考官独立验证修复）：疑问句绝不触发豁免 ──
+# ── 豁免逻辑守卫（2026-08-23 独立验证修复）：疑问句绝不触发豁免 ──
 def test_allergy_exemption_question_not_exempt(client):
     """问禁忌食材（X能吃吗）不得被豁免逻辑误判为'X可以吃'而放行。"""
     _chat(client, "我对花生过敏", session_id="s_ex_q")
