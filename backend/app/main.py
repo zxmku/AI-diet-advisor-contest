@@ -1872,6 +1872,23 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # （R2）「吃布洛芬后晚餐吃什么好」不得进一餐，必须走现有拒药路径（拒答+免责）。
     is_num_query, num_food = nutrition_lookup.is_numeric_lookup_query(message)
 
+    # ── RAG 增强（最小增量，不破坏架构）──
+    # 低GI / 升糖指数 / GI 类的「知识问答、列举」语义（如「什么是升糖指数」
+    # 「低GI食物有哪些」「哪些食物属于低GI」）并非「某食材多少数值」查表，
+    # 应交给下方 BM25/RAG 检索（素材 B 的 4.2 低GI 饮食核心原则等），
+    # 不得被数值引擎误杀成「暂未收录」。
+    # 仅放行「知识/列举」语义且不含明确数值查表词（多少/几克…）的问法，
+    # 保留「燕麦的GI值是多少」等合法查表继续走数值引擎。
+    if is_num_query and num_food:
+        _m = message or ""
+        _gi_kw = ("升糖指数", "GI值", "什么是GI", "GI是什么", "什么叫GI", "低GI", "低gi")
+        _enum_kw = ("哪些食物", "有哪些", "列举", "推荐食物", "属于低GI", "适合控糖的食物")
+        _explicit_num = ("多少", "几克", "几大卡", "多少千卡", "热量多少", "蛋白质多少", "脂肪多少")
+        _is_gi_or_enum = any(k in _m for k in _gi_kw) or any(e in _m for e in _enum_kw)
+        _has_explicit_num = any(x in _m for x in _explicit_num)
+        if _is_gi_or_enum and not _has_explicit_num:
+            is_num_query, num_food = False, None
+
     # ── 点单决策（Decision Tool · THE LAST 30 SECONDS）：分支前解析并按禁忌过滤，
     # 全部被过滤则候选为 None → 回退常规流程，避免空答复。 ──
     _decision_cand = decision_tool.resolve(
