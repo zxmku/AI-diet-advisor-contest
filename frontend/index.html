@@ -358,7 +358,7 @@
           <button onclick="quickAsk('专业版会员含什么？')">💳 会员服务</button>
         </div>
         <div class="inrow">
-          <textarea id="input" rows="1" maxlength="500" placeholder="问问小优：今晚怎么吃、食材热量…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
+          <textarea id="input" rows="1" placeholder="问问小优：今晚怎么吃、食材热量…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
           <button class="send" id="sendBtn" onclick="send()">➤</button>
         </div>
       </div>
@@ -464,6 +464,17 @@ let ttsHealthy = false;  // 健康状态：页面加载时探测 /health.tts_ava
 let currentAudio = null;      // 当前播放实例（防串音：新音频响起前强制停旧）
 let currentAudioUrl = null;   // 当前播放的 blob URL（停旧时及时释放内存）
 
+// 立即停止当前播报并释放资源（串音根治：发送/开关/新音频到达时调用，旧音频即刻闭嘴）
+function stopTTS(){
+  if(currentAudio){
+    currentAudio.pause();
+    currentAudio.onended = null;
+    currentAudio.src = '';
+    currentAudio = null;
+  }
+  if(currentAudioUrl){ URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+}
+
 function speakText(text){
   if(!text) return Promise.resolve();
   return fetch('/api/tts', {
@@ -473,13 +484,7 @@ function speakText(text){
     if(!r.ok){ ttsHealthy=false; updateTTS(); return; }
     // 新音频就绪后才停旧：上一段没播完也强制中断，杜绝两段重叠串音；
     // 若本次请求失败（!r.ok）则旧音频不受影响、继续播放。
-    if(currentAudio){
-      currentAudio.pause();
-      currentAudio.onended = null;
-      currentAudio.src = '';
-      if(currentAudioUrl){ URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
-      currentAudio = null;
-    }
+    stopTTS();
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = new Audio(url);
@@ -510,6 +515,7 @@ function updateTTS(){
 function toggleTTS(){
   ttsEnabled = !ttsEnabled;
   localStorage.setItem('hp_tts', ttsEnabled ? '1' : '0');
+  if(!ttsEnabled) stopTTS();  // 关闭开关时立即停掉正在播报的音频（"关不掉"根治）
   updateTTS();
   toast(ttsEnabled ? '🔊 语音已开启，回复自动朗读' : '🔇 语音已关闭，回复静音');
 }
@@ -796,6 +802,7 @@ async function loadRecommend(goalTag){
 
 /* ═══ 场景入口 ═══ */
 async function runQuick(action, btn){
+  stopTTS();  // 点场景卡/快捷入口同样立即打断当前播报
   const scene = document.getElementById('sceneCards');
   if(!scene || scene.dataset.busy === '1') return;
   scene.dataset.busy = '1';
@@ -826,9 +833,10 @@ function collapseScene(scene){
 
 /* ═══ 发送 ═══ */
 async function send(){
+  stopTTS();  // 发送即打断当前播报（语音串音根治：不等新回复就绪，立即停旧）
   const q = input.value.trim();
   if(!q){ toast('请输入您的问题'); input.focus(); return; }
-  if(q.length > 500){ toast('输入内容过长，请精简后重试'); input.value=''; input.style.height='46px'; return; }
+  if(q.length > 500){ toast('输入内容过长，请精简后重试'); input.focus(); return; }  // 保留输入供精简，不丢内容
   addMsg(escapeHtml(q), 'me');
   const sceneEl = document.getElementById('sceneCards');
   if(sceneEl) collapseScene(sceneEl);
