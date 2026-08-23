@@ -1,5 +1,5 @@
 # HealthPick 一键部署（默认 SQLite，无需外部数据库）。
-# 用法：docker compose up -d  →  访问 http://localhost:8000
+# 用法：docker compose up -d  →  访问 http://localhost:8137
 services:
   healthpick:
     build:

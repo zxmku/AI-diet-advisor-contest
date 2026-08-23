@@ -24,13 +24,15 @@ def _load_dotenv(path: str | None = None) -> bool:
 
     把 .env 中的 ``KEY=VALUE`` 注入 os.environ（仅当该键尚未存在于环境中，
     即真实环境变量优先于 .env 文件）。搜索顺序：显式 path → 后端目录 .env →
-    当前工作目录 .env。.env 不入版本库，仓库只留 .env.example。
+    项目 deploy/.env → 当前工作目录 .env（兼容一键启动与命令行两种入口，
+    两处配置任一有效，文档口径统一）。.env 不入版本库，仓库只留 .env.example。
     """
     candidates: list[Path] = []
     if path:
         candidates.append(Path(path))
     backend_dir = Path(__file__).resolve().parent.parent  # backend/
     candidates.append(backend_dir / ".env")
+    candidates.append(backend_dir.parent / "deploy" / ".env")  # 项目根/deploy/.env
     candidates.append(Path.cwd() / ".env")
     for cand in candidates:
         if cand.is_file():
