@@ -355,6 +355,32 @@ def _is_food_excluded(food: str, excluded_set: set[str]) -> bool:
     return False
 
 
+def _mention_excluded_food(message: str, excluded: Sequence[str]) -> str | None:
+    """检查消息中是否提到禁忌清单中的食材（多轮记忆场景：会话已声明过敏，
+    本轮问「能吃X吗」时必须拦截，不得答非所问）。
+
+    匹配策略：① 速查表食材名（精确/包含）；② 禁忌排除清单食材名（如虾仁/花生
+    等禁忌词）；命中且该食材在 excluded 中 → 返回该食材名，否则 None。
+    """
+    if not excluded:
+        return None
+    excluded_set = set(excluded)
+    text = message or ""
+    # 先匹配速查表食材（权威名），再匹配禁忌排除清单食材（含族类词）
+    candidates: list[str] = []
+    for key in nutrition_lookup.NUTRITION_TABLE:
+        if key and len(key) >= 2 and key in text:
+            candidates.append(key)
+    for f in excluded:
+        if f and len(f) >= 2 and f in text:
+            candidates.append(f)
+    # 最长优先：三文鱼 不被「鱼」抢先，花生酱 命中「花生」
+    for cand in sorted(set(candidates), key=len, reverse=True):
+        if _is_food_excluded(cand, excluded_set):
+            return cand
+    return None
+
+
 _REDACT_MARK = "（已按禁忌剔除）"
 _REDACT_RUN = re.compile(r"（已按禁忌剔除）(?:[、/，,]*（已按禁忌剔除）)+")
 # 考官下套修复：剔除标记后紧跟的食物形态单字（碎/酱/粉/片…）是残字，一并吞掉。
@@ -2120,6 +2146,37 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                 numeric_miss = False
 
         if not numeric_hit and not numeric_miss:
+            # ── 禁忌食材拦截（2026-08-23 考官模拟压测新增）──
+            # 多轮记忆场景：会话已声明过敏/禁忌（如花生过敏），本轮问「那我能吃
+            # 花生酱吗」「花生能吃吗」→ 必须直接拦截，不得落入检索答非所问。
+            # 仅对"能吃/可以吃/想吃什么"类问法拦截，避免营养查询误伤
+            # （如「螃蟹多少千卡」是查询不是吃）。
+            _ask_about_eat = re.search(
+                r"(能吃|可以吃|能吃吗|可以吃吗|想吃|能不能吃|能吃.*吗|能炒|能煮|能蒸|"
+                r"能炸|能做|能放|能加|能配|能拌|能喝|能当|能作|能生吃|能直接吃|"
+                r"吃.*可以吗|来.*花生|可以.*吗|能不能.*吗)", message)
+            if _ask_about_eat:
+                _blocked_food = _mention_excluded_food(message, excluded)
+                if _blocked_food:
+                    reply = (
+                        f"⚠️ 「{_blocked_food}」在您的禁忌/过敏清单中，建议避开哦。"
+                        "需要的话，我可以帮您推荐其他替代食材～"
+                    )
+                    intent = "allergy_block"
+                    sources = []
+                    if excluded:
+                        reply += f"\n\n（您已声明的禁忌：{'、'.join(sorted(excluded)[:8])}）"
+                    # 平台问法同轮保留（如「会员多少钱？顺便花生能吃吗」不吞平台段）
+                    plat_prefix, plat_chunk = _platform_reply_prefix(message)
+                    if plat_prefix:
+                        reply = f"{plat_prefix}\n\n{reply}"
+                    return make_response(
+                        {"reply": reply, "intent": intent, "goal_tag": None,
+                         "meal": None, "decision": None},
+                        sources=sources,
+                        model="local-rules",
+                        degraded=False,
+                    )
             # 领域路由门控：区分「膳食顾问需求」与「闲聊/非膳食」。
             # 无检索命中，或命中了检索块但用户问题不属于膳食领域（如「大龙虾吃什么」是
             # 动物习性、「世界首富是谁」是常识）→ 走闲聊分支，绝不硬套无关知识块。

@@ -125,3 +125,29 @@ def test_no_false_allergy_on_nutrition_query(client):
     for i, msg in enumerate(("螃蟹多少千卡", "生蚝多少千卡", "三文鱼多少千卡")):
         r = _chat(client, msg, session_id=f"s_nofp{i}")
         assert not _detected_allergy(r["data"]["reply"]), f"营养问「{msg}」不得误判过敏"
+
+
+# ── 多轮禁忌拦截（2026-08-23 考官模拟压测新增）：会话已声明过敏后，问禁忌食材必须拦截 ──
+def test_multi_turn_allergy_block_peanut_butter(client):
+    _chat(client, "我对花生过敏", session_id="s_mt_peanut")
+    r = _chat(client, "那我现在能吃花生酱吗", session_id="s_mt_peanut")
+    assert r["data"]["intent"] == "allergy_block", f"花生酱必须被拦截: {r['data']['intent']}"
+    assert "花生" in r["data"]["reply"], "拦截回复必须点名禁忌食材"
+
+
+def test_multi_turn_allergy_block_shrimp_stir(client):
+    _chat(client, "我对虾蟹过敏", session_id="s_mt_shrimp")
+    r = _chat(client, "虾仁能炒鸡蛋吗", session_id="s_mt_shrimp")
+    assert r["data"]["intent"] == "allergy_block", f"虾仁必须被拦截: {r['data']['intent']}"
+
+
+def test_multi_turn_allergy_block_salmon_raw(client):
+    _chat(client, "我海鲜过敏", session_id="s_mt_salmon")
+    r = _chat(client, "三文鱼能生吃吗", session_id="s_mt_salmon")
+    assert r["data"]["intent"] == "allergy_block", f"三文鱼必须被拦截: {r['data']['intent']}"
+
+
+def test_no_allergy_block_for_normal_user(client):
+    """未声明过敏的用户问同类问题不得被拦截（对照回归）。"""
+    r = _chat(client, "花生酱能配全麦面包吃吗", session_id="s_ctrl_norm")
+    assert r["data"]["intent"] != "allergy_block", "未声明过敏不得拦截花生酱"
