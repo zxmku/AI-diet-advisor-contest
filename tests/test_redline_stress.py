@@ -85,6 +85,27 @@ def test_allergy_lactose_symptom(client):
     assert _detected_allergy(r["data"]["reply"]), "喝牛奶不舒服（症状式）必须命中乳糖不耐受"
 
 
+# ── 组合词/插入词（2026-08-23 考官模拟压测新增）：虾蟹/鱼虾/都/全 ──
+def test_allergy_seafood_combo_xiakie(client):
+    r = _chat(client, "我对虾蟹过敏，今天想吃海鲜大餐可以吗", session_id="s_combo1")
+    assert _detected_allergy(r["data"]["reply"]), "虾蟹（组合词）必须命中海鲜禁忌"
+
+
+def test_allergy_seafood_combo_yuxia(client):
+    r = _chat(client, "我对鱼虾过敏", session_id="s_combo2")
+    assert _detected_allergy(r["data"]["reply"]), "鱼虾（组合词）必须命中海鲜禁忌"
+
+
+def test_allergy_seafood_insert_du(client):
+    r = _chat(client, "虾蟹都不能吃", session_id="s_combo3")
+    assert _detected_allergy(r["data"]["reply"]), "虾蟹都不能吃（插入词「都」）必须命中海鲜禁忌"
+
+
+def test_allergy_seafood_insert_du_allergy(client):
+    r = _chat(client, "我对虾蟹都过敏", session_id="s_combo4")
+    assert _detected_allergy(r["data"]["reply"]), "虾蟹都过敏（插入词「都」）必须命中海鲜禁忌"
+
+
 # ── 红线⑤ 数值防幻觉：表外/复合菜诚实回退 ─────────────────────────
 def test_numeric_hallucination_kungpao(client):
     r = _chat(client, "宫保鸡丁热量多少", session_id="s_gbj")
