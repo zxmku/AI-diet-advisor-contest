@@ -1,5 +1,24 @@
 # 10_项目源码_healthpick · AI 智能膳食顾问源码
 
+> **⭐ 快速开始（零基础 · 3 分钟跑起来）**
+>
+> **方式 A · 一键启动（推荐，最省事，零外部依赖）**
+> 1. 确保已装 **Python 3.10 / 3.11 / 3.12**（官网 https://www.python.org/downloads ，安装时勾选 *Add to PATH*）。
+> 2. 双击根目录 **`一键启动.bat`** → 脚本用**仓库自带的离线依赖包**（`deploy/wheels/`）装依赖（**无需联网**）并开浏览器。
+> 3. 浏览器打开 **http://localhost:8137** 即可对话。
+>    - **零配置可跑**：不填密钥也能用全部核心功能（本地规则模式，仅无 AI 润色）。
+>    - **可选真 AI**：用记事本打开 `deploy/.env`，填 `DEEPSEEK_API_KEY=你的密钥`，重双击即可。
+>
+> **方式 B · 命令行（考官最稳兜底）**
+> ```bash
+> cd backend
+> pip install --no-index --find-links ../deploy/wheels -r requirements.txt   # 离线安装自带依赖，无需联网
+> python -m uvicorn app.main:app --host 127.0.0.1 --port 8137
+> # 浏览器打开 http://127.0.0.1:8137/
+> ```
+>
+> 启动失败看 `deploy/pip_install.log`、`deploy/server.err.log` —— 所有错误都会显式打印，不会"黑窗一闪没反应"。运行所需全部 Python 包已随仓库打包于 `deploy/wheels/`，**核心运行全程不访问外网**。
+
 > 本文档为项目源码目录说明。对外使用请见 `20_交付文档/使用说明.md`（启动方式、真 AI 配置、功能清单与合规红线）。
 
 ## 目录分区
@@ -30,7 +49,7 @@
 ## 快速验证
 
 ```bash
-pip install -r backend/requirements.txt
+cd backend && pip install --no-index --find-links ../deploy/wheels -r requirements.txt
 cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8137
 # 浏览器打开 http://127.0.0.1:8137/
 ```

@@ -10,4 +10,6 @@ httpx            # HTTP 客户端：自测脚本与后续 DeepSeek API 调用（
 rank_bm25        # BM25 检索打分（MOD-02 知识检索用）
 jieba            # 中文分词（MOD-02 BM25 前置分词用）
 pytest           # 红线自动化测试（MOD-12 用）
-edge-tts         # 语音输出适配器（迭代：拟真人神经语音，零 Key 零成本；缺失时优雅降级 503）
+
+# 注意：核心运行零外部依赖，以上包均已随仓库离线打包（deploy/wheels/），
+# 启动时不需联网。语音输出 edge-tts 见 requirements-optional.txt（非核心、运行时联网）。
