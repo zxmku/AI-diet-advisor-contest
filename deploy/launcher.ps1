@@ -27,6 +27,8 @@ Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "   HealthPick · AI 智能膳食顾问 · 一键启动（离线版）" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host "  ☁️ 推荐优先使用 README 顶部的「线上体验」链接（免安装、体验更稳）" -ForegroundColor Yellow
+Write-Host "     本脚本为本地兜底，需本机已装 Python 3.10-3.12" -ForegroundColor Yellow
 
 # ── 1) 读取密钥（只读，不询问）────────────────────────────
 $apiKey = ""
