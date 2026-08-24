@@ -192,3 +192,20 @@ def test_normal_meal_intent_kept(client):
     """对照：无场景词的「今晚减脂餐」仍正常走一餐生成。"""
     d = _chat(client, "今晚减脂餐吃什么", session_id="r_sc3")
     assert d["intent"] == "meal", f"正常一餐意图不得受影响: {d['intent']}"
+
+
+# ── 2026-08-24 H1：第三人称过敏不得记入用户禁忌清单 ─────────────────
+def test_third_party_allergy_not_own_excluded(client):
+    """「我妈妈对花生过敏」不得把坚果类排除到用户本人。"""
+    _chat(client, "我妈妈对花生过敏", session_id="r_tp_a1")
+    d = _chat(client, "今天中午吃什么好", session_id="r_tp_a1")
+    # 用户本人未被排除花生/坚果：回复不应出现「您的禁忌/过敏清单」
+    assert "您的禁忌" not in d["reply"] and "您的过敏" not in d["reply"], \
+        f"第三人称过敏不得记入用户禁忌: {d['reply'][:80]}"
+
+
+def test_first_person_allergy_still_excluded(client):
+    """对照：本人「我对花生过敏」仍正常排除花生（多轮拦截）。"""
+    _chat(client, "我对花生过敏", session_id="r_fp_a1")
+    d = _chat(client, "那我现在能吃花生酱吗", session_id="r_fp_a1")
+    assert d["intent"] == "allergy_block", f"本人过敏仍必须拦截: {d['intent']}"

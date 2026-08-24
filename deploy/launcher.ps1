@@ -35,15 +35,15 @@ if (Test-Path $EnvFile) {
     if ($c -match 'DEEPSEEK_API_KEY=(\S+)') { $apiKey = $matches[1] }
 }
 if ($apiKey) {
-    $masked = $apiKey.Substring(0, [Math]::Min(8, $apiKey.Length)) + "..."
-    Write-OK ("检测到密钥（" + $masked + "），将启动真 AI 模式")
+    # 2026-08-24 密钥纪律加固：绝不打印密钥任何片段（演示/录屏即泄露），只报状态
+    Write-OK "已检测到 DeepSeek 密钥（已配置），将启动真 AI 模式"
 } else {
     Write-Warn "未检测到密钥：将以本地规则模式运行（核心功能完整，仅无 AI 润色）。"
     Write-Warn "如需真 AI，用记事本打开 deploy\.env，填 DEEPSEEK_API_KEY=你的密钥 后重双击。"
 }
 
-# ── 2) 查找本机 Python（需 3.10+，推荐 3.11；不联网安装）──
-Write-Step "查找本机 Python 运行环境（需 3.10+）..."
+# ── 2) 查找本机 Python（仅支持 3.10/3.11/3.12，因离线依赖包只内置这三版；不联网安装）──
+Write-Step "查找本机 Python 运行环境（需 3.10 / 3.11 / 3.12）..."
 function Get-Python {
     foreach ($cmd in @("python", "py", "python3")) {
         $p = Get-Command $cmd -ErrorAction SilentlyContinue
@@ -57,6 +57,7 @@ function Get-Python {
 $py = Get-Python
 if (-not $py) {
     Write-Err "本机未找到 Python 3.10 / 3.11 / 3.12，无法启动。"
+    Write-Err "（离线依赖包 deploy\wheels 仅内置这三版的安装包，其他版本如 3.13 暂不支持）"
     Write-Err "请先安装 Python 3.11（一次即可，属于运行环境）："
     Write-Err "  https://www.python.org/downloads/release/python-3119/  （安装时务必勾选 'Add to PATH'）"
     Write-Err "装好后重新双击本脚本即可。本程序不联网自动安装，避免墙内/离线失败。"

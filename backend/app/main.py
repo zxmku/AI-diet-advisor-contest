@@ -214,6 +214,20 @@ def _is_first_person_health_claim(message: str) -> bool:
     return any(h in text for h in _HEALTH_STATE_PHRASES)
 
 
+def _is_first_person_allergy(message: str) -> bool:
+    """消息是否为「用户本人」的过敏声明（我对X过敏 / 我X过敏）。
+
+    2026-08-24 H1 修复（与疾病人称同源）：「我妈妈对花生过敏」的过敏属于
+    他人，不得记入用户本人的禁忌清单（否则用户被错误排除 8 类坚果）。
+    - 含亲属词时：仅当有「我对…过敏」本人表述才算本人；
+    - 不含亲属词：交给词表判断（可能命中「对X过敏」句式）。
+    """
+    text = message or ""
+    if not any(r in text for r in _THIRD_PARTY_RELATIVES):
+        return True
+    return "我对" in text and "过敏" in text
+
+
 def _detect_goal(message: str) -> str | None:
     """从消息中识别人群目标（减脂/增肌/调理）；未命中返回 None，不覆盖既有画像。
 
@@ -1981,6 +1995,13 @@ def chat(req: ChatRequest) -> UnifiedResponse:
     # （提前到回复逻辑之前，供 P3 一餐生成器做禁忌排除）
     session_allergy_ids = set(_session_allergies(req.user_id, req.session_id))
     detected_allergies = set(detect_allergies(message))
+    # 2026-08-24 H1 修复：第三人称过敏（我妈妈对花生过敏）属于他人，不得记入
+    # 用户本人的禁忌清单（否则用户被错误排除 8 类坚果）；本人过敏不受影响。
+    if (
+        any(r in (message or "") for r in _THIRD_PARTY_RELATIVES)
+        and not _is_first_person_allergy(message)
+    ):
+        detected_allergies = set()
     # P2：本轮「新检测到」的过敏（尚未写回会话）——只在首次声明时非空 → 只追问一次
     new_allergies = detected_allergies - session_allergy_ids
     allergy_ids = set(req.allergies) | detected_allergies | session_allergy_ids
