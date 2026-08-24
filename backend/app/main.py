@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HealthPick AI 智能膳食顾问 API",
-    version="0.1.0",
+    version="1.20",
     description="健康优选 7×24 小时 AI 膳食顾问后端服务",
     lifespan=lifespan,
     docs_url=None if _is_prod else "/docs",
