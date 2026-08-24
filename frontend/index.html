@@ -533,6 +533,16 @@ function initTTS(){
 }
 
 /* ═══ 渲染：机器人消息（真实回答 + 来源 + 免责 + 模型标注 + TTS） ═══ */
+/* 顶部模型徽章实时更新（2026-08-24 降级透明化）：每次回复后反映当前实际模式 */
+function updateModelBadge(meta){
+  const txt = document.getElementById('modelbadgeTxt');
+  if(!txt) return;
+  const isAI = meta && !meta.degraded && meta.model && meta.model !== 'local-rules';
+  txt.textContent = isAI ? 'AI 在线（DeepSeek）' : '本地模式（AI 暂不可用）';
+  const badge = document.getElementById('modelbadge');
+  if(badge) badge.style.opacity = isAI ? '1' : '0.7';
+}
+
 function renderBot(j){
   if(!j || !j.data) return;
   const d = document.createElement('div');
@@ -555,12 +565,14 @@ function renderBot(j){
     ).join('　|　');
     d.appendChild(s);
   }
-  /* 模型来源标注（进阶需求：meta.model 前端可见） */
+  /* 模型来源标注（进阶需求：meta.model 前端可见）+ 降级透明化（2026-08-24） */
   if(j.meta && j.meta.model){
     const mb = document.createElement('span');
     mb.className = 'msg-model';
-    mb.textContent = '模型：' + (j.meta.model === 'deepseek-chat' ? 'DeepSeek' : j.meta.model);
+    const isAI = !j.meta.degraded && j.meta.model !== 'local-rules';
+    mb.textContent = '模型：' + (isAI ? 'DeepSeek' : '本地规则模式');
     d.appendChild(mb);
+    updateModelBadge(j.meta);  // 顶部徽章实时反映当前回答模式（降级不再偷偷发生）
   }
   msgsInner.appendChild(d);
   if(j.data.meal){

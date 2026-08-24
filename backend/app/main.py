@@ -180,12 +180,38 @@ _GOAL_KEYWORDS: dict[str, tuple[str, ...]] = {
 # 覆盖已有 goal_tag）。
 _REQUEST_KEYWORDS: tuple[str, ...] = ("推荐", "方案", "食谱", "计划", "怎么吃", "给我")
 _PERSONAL_PRONOUNS: tuple[str, ...] = ("我的", "本人")
+# 第三人称亲属/他人词（2026-08-24 合规修复）：「我妈妈有糖尿病」的健康声明属于
+# 他人，不得写库为用户画像、不得贴「结合您的XX需求」前缀（编造用户健康事实）。
+_THIRD_PARTY_RELATIVES: tuple[str, ...] = (
+    "妈妈", "爸爸", "母亲", "父亲", "我妈", "我爸", "我妈妈", "我爸爸",
+    "家人", "亲戚", "亲属", "家属", "朋友", "同事", "邻居", "客户", "患者", "病人",
+    "老婆", "老公", "妻子", "丈夫", "爱人", "儿子", "女儿", "孩子", "家父", "家母",
+    "爷爷", "奶奶", "外公", "外婆", "姥姥", "姥爷", "孙子", "孙女",
+    "弟弟", "妹妹", "哥哥", "姐姐", "我哥", "我弟", "我姐", "我妹", "我朋友", "我同事",
+)
 _HEALTH_STATE_PHRASES: tuple[str, ...] = (
     "血糖高", "血糖偏高", "高血糖", "糖尿病", "三高", "血压高", "尿酸高",
     "减肥中", "瘦身中", "在减肥", "想减肥", "想减脂", "在减脂", "要减脂",
     "想减重", "在减重", "要减重", "减重中", "想降体重",
     "想增肌", "在增肌", "增肌中", "想控糖", "在控糖", "要控糖", "控糖中",
 )
+
+
+def _is_first_person_health_claim(message: str) -> bool:
+    """消息是否为「用户本人」的健康/目标声明（我有XX / 我的XX / 我得XX / 我患XX）。
+
+    2026-08-24 合规修复：第三人称（我妈妈有糖尿病 / 家人血糖高）不属于用户本人。
+    - 含亲属词时：仅当同句有第一人称患病表述（「我有糖尿病」「我得糖尿病」）才算本人；
+    - 不含亲属词：健康词命中即算本人（兼容「我血糖偏高」「想减脂」等裸声明）。
+    """
+    text = message or ""
+    if any(r in text for r in _THIRD_PARTY_RELATIVES):
+        for hp in _HEALTH_STATE_PHRASES:
+            for p in ("我有", "我得了", "我得", "我患", "我的"):
+                if p + hp in text:
+                    return True
+        return False
+    return any(h in text for h in _HEALTH_STATE_PHRASES)
 
 
 def _detect_goal(message: str) -> str | None:
@@ -202,9 +228,16 @@ def _detect_goal(message: str) -> str | None:
     text = message or ""
     request_hit = any(rk in text for rk in _REQUEST_KEYWORDS)
     personal_claim = any(p in text for p in _PERSONAL_PRONOUNS)
-    health_claim = any(h in text for h in _HEALTH_STATE_PHRASES)
+    # 2026-08-24 合规修复：第三人称健康声明（我妈妈有糖尿病）不属于用户本人，
+    # 不得写库为目标画像（否则后续全部回复被「您的控糖需求」持久污染）。
+    health_claim = _is_first_person_health_claim(text)
     # 纯请求语义：用户在「要方案/求推荐」而非陈述自身状态 → 不算目标声明
     if request_hit and not personal_claim and not health_claim:
+        return None
+    # 2026-08-24 合规修复：第三人称健康声明（我妈妈有糖尿病）属于他人话题，
+    # 不得写库为用户画像（否则后续回复被「您的控糖需求」持久污染）；
+    # 仅排除他人话题，不动目标词表本身的判定（「想增重」等仍走 _GOAL_KEYWORDS）。
+    if any(r in text for r in _THIRD_PARTY_RELATIVES) and not _is_first_person_health_claim(text):
         return None
     for goal, keywords in _GOAL_KEYWORDS.items():
         if any(kw in text for kw in keywords):
@@ -223,6 +256,18 @@ _MEAL_INTENT_TRIGGERS: tuple[str, ...] = (
     "今天吃什么", "一餐", "一顿", "搭一餐", "做一餐", "做一顿", "来一餐",
     "给我做", "帮我做", "想吃点啥", "吃啥", "吃点啥", "吃什么好",
     "早上吃", "中午吃", "下午吃", "晚上吃",
+)
+
+# 2026-08-24 场景词排除（P0-1）：便利店/外卖/自助/餐厅等「场景化点餐」本质是
+# 行为决策，不是「在家自己做一餐」——命中场景词即排除一餐意图，让位给
+# decision_tool 点单决策（本地）或 LLM 场景指导（有密钥时），
+# 避免「便利店买的早餐」被劫持成「自己做鸡胸肉」的一餐卡。
+_SCENE_MEAL_EXCLUDE: tuple[str, ...] = (
+    "便利店", "全家", "罗森", "7-11", "711", "7-11便利店",
+    "麦当劳", "麦门", "金拱门", "m记", "mcdonald",
+    "肯德基", "kfc", "开封菜", "吉野家", "牛肉饭",
+    "外卖", "自助", "餐厅", "堂食", "食堂", "酒店", "快餐",
+    "点单", "怎么点", "怎么选", "去哪吃", "店里", "门店", "早餐店", "打包",
 )
 
 _MEAL_GOAL_ASK = "想减脂、增肌还是控糖？告诉我你的目标，我先帮你搭一餐。"
@@ -305,6 +350,9 @@ def _is_meal_intent(message: str) -> bool:
     宵夜）同现才命中；「今晚减脂餐/今晚吃什么/今晚吃啥」不受影响。
     """
     text = message or ""
+    # 2026-08-24 场景词排除：场景化点餐（便利店/外卖/自助…）不是「自己做一餐」
+    if any(sc in text for sc in _SCENE_MEAL_EXCLUDE):
+        return False
     if any(t in text for t in _MEAL_INTENT_TRIGGERS):
         return True
     if "今晚" in text and re.search(r"今晚.{0,6}(?:吃|餐|饭|做|搭|点|宵夜)", text):
@@ -1123,12 +1171,18 @@ def _chitchat_local_reply(message: str) -> str:
 def _disease_local_reply(message: str) -> str:
     """local-rules 疾病问法兜底（无 LLM 且知识库无该疾病内容时）：
     不引无关方案块（暴风雪回归：「脂肪肝…早餐」曾引到增肌方案块），
-    给通用疾病膳食原则；免责由上层按 is_disease_query 注入。"""
+    给通用疾病膳食原则；免责由上层按 is_disease_query 注入。
+    2026-08-24 合规修复：第三人称（家人患病）不得贴「您的」前缀，仍给膳食原则。"""
     label = None
-    for kw, lab in _DISEASE_LABELS:
-        if kw in (message or ""):
-            label = lab
-            break
+    # 第三人称健康声明 → 不给用户贴「您的XX需求」前缀（编造用户健康事实）
+    if not (
+        any(r in (message or "") for r in _THIRD_PARTY_RELATIVES)
+        and not _is_first_person_health_claim(message)
+    ):
+        for kw, lab in _DISEASE_LABELS:
+            if kw in (message or ""):
+                label = lab
+                break
     head = f"结合您的{label}需求，" if label else ""
     prefix = head + "\n\n" if head else ""
     return (
@@ -1801,6 +1855,10 @@ def _profile_guide(message: str, disease: bool, session_id: str | None = None) -
         finally:
             db.close()
     for t in texts:
+        # 2026-08-24 合规修复：第三人称健康声明（我妈妈有糖尿病 / 家人血糖高）
+        # 不得贴「结合您的XX需求」前缀——那是编造用户健康事实（红线风险）。
+        if any(r in (t or "") for r in _THIRD_PARTY_RELATIVES) and not _is_first_person_health_claim(t):
+            continue
         for kw, label in _DISEASE_LABELS:
             if kw in (t or ""):
                 return f"结合您的{label}需求，"
@@ -2226,7 +2284,7 @@ def chat(req: ChatRequest) -> UnifiedResponse:
                          "meal": None, "decision": None},
                         sources=sources,
                         model="local-rules",
-                        degraded=False,
+                        degraded=True,  # 2026-08-24：与规则路径一致（非 LLM 生成即降级标记）
                     )
             # 领域路由门控：区分「膳食顾问需求」与「闲聊/非膳食」。
             # 无检索命中，或命中了检索块但用户问题不属于膳食领域（如「大龙虾吃什么」是

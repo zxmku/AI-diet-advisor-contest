@@ -152,3 +152,43 @@ def test_glp1_refuse_with_disclaimer(client):
     body = r.json()
     assert "不提供用药建议" in body["data"]["reply"], "GLP-1 应拒药"
     assert body.get("disclaimer"), "GLP-1 应带免责"
+
+
+# ── 2026-08-24 合规修复：第三人称健康声明不得写库/贴前缀 ─────────────
+def test_third_party_disease_not_own_profile(client):
+    """「我妈妈有糖尿病」不得贴「您的控糖需求」前缀（编造用户健康事实）。"""
+    d = _chat(client, "我妈妈有糖尿病，怎么给她做饭", session_id="r_tp1")
+    assert "您的控糖" not in d["reply"], f"第三人称不得贴本人前缀: {d['reply'][:60]}"
+    assert "结合您" not in d["reply"], f"第三人称不得贴'结合您'前缀: {d['reply'][:60]}"
+
+
+def test_third_party_disease_not_persisted(client):
+    """第三人称健康声明不写库：下一轮普通问题不触发「您的」前缀（无持久污染）。"""
+    _chat(client, "我妈妈有糖尿病", session_id="r_tp2")
+    d = _chat(client, "今天中午吃什么好", session_id="r_tp2")
+    assert "您的控糖" not in d["reply"], f"第三人称污染画像: {d['reply'][:60]}"
+
+
+def test_first_person_disease_still_guided(client):
+    """第一人称「我有糖尿病」仍正常贴「结合您的控糖需求」前缀（对照回归）。"""
+    d = _chat(client, "我有糖尿病，平时吃什么好", session_id="r_fp1")
+    assert "您的控糖" in d["reply"], f"第一人称必须保留画像引导: {d['reply'][:60]}"
+
+
+# ── 2026-08-24 场景词路由：场景化点餐不劫持成一餐 ───────────────────
+def test_scene_meal_not_hijacked_convenience(client):
+    """便利店买的早餐 → 不得走 meal（自己做一餐），应走点单决策。"""
+    d = _chat(client, "便利店买的早餐能吃吗", session_id="r_sc1")
+    assert d["intent"] == "decision", f"便利店场景应走点单决策: {d['intent']}"
+
+
+def test_scene_meal_not_hijacked_hotel(client):
+    """酒店自助早餐 → 不得走 meal，给场景化指导（检索/决策均可）。"""
+    d = _chat(client, "酒店自助早餐琳琅满目怎么拿", session_id="r_sc2")
+    assert d["intent"] != "meal", f"酒店自助不得判成自己做一餐: {d['intent']}"
+
+
+def test_normal_meal_intent_kept(client):
+    """对照：无场景词的「今晚减脂餐」仍正常走一餐生成。"""
+    d = _chat(client, "今晚减脂餐吃什么", session_id="r_sc3")
+    assert d["intent"] == "meal", f"正常一餐意图不得受影响: {d['intent']}"
